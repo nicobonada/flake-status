@@ -111,7 +111,9 @@ func newUI(statuses []flakeStatus) uiModel {
 	delegate.Styles.SelectedTitle = delegate.Styles.SelectedTitle.Foreground(lipgloss.Color("15")).BorderForeground(lipgloss.Color("12"))
 
 	l := list.New(items, delegate, 0, 0)
-	l.Title = "Flakes"
+	// Pane chrome owns the "Flakes" header — hide bubbles' own title row.
+	l.Title = ""
+	l.SetShowTitle(false)
 	l.SetShowStatusBar(false)
 	l.SetFilteringEnabled(true)
 	l.SetShowHelp(false)
@@ -154,8 +156,8 @@ func (m *uiModel) refreshDetail() {
 		return
 	}
 
+	// Header is "Inputs · <label>" on the pane chrome — body is path + inputs only.
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s  %s\n", statusMark(st.kind), styleTitle.Render(st.label))
 	fmt.Fprintf(&b, "%s\n\n", styleMuted.Render(st.path))
 
 	switch st.kind {
