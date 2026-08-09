@@ -1,6 +1,6 @@
-// flake-up: survey flake inputs under ~/src, multi-select with fzf, update locks.
+// flake-up: survey flake inputs under ~/src, multi-select with Huh, update locks.
 //
-// Pure fzf UI (no subcommands). Same update for every repo:
+// Interactive TUI only (no subcommands). Same update for every repo:
 //   nix flake update --flake <path>  then commit flake.lock if dirty.
 // Does not activate systems (no nh switch).
 package main
@@ -15,6 +15,9 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/charmbracelet/huh"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func main() {
@@ -27,9 +30,14 @@ func run(args []string) int {
 		return 0
 	}
 	if len(args) > 0 {
-		fmt.Fprintln(os.Stderr, "flake-up: pure fzf UI — no CLI subcommands.")
+		fmt.Fprintln(os.Stderr, "flake-up: interactive TUI only — no CLI subcommands.")
 		fmt.Fprintln(os.Stderr, "  Run with no arguments. Agents: nix flake update --flake <path>")
 		return 2
+	}
+
+	if !isInteractive() {
+		fmt.Fprintln(os.Stderr, "flake-up: needs an interactive TTY")
+		return 1
 	}
 
 	srcRoot, err := srcRoot()
@@ -61,15 +69,14 @@ func run(args []string) int {
 		byLabel[st.label] = st
 	}
 
-	selected, err := fzfMulti(fzfLines(statuses), "update> ",
-		"TAB multi-select · ctrl-a toggle all · enter update · esc cancel")
+	selected, err := pickFlakes(statuses)
 	if err != nil {
+		if isCancel(err) {
+			fmt.Println("cancelled")
+			return 0
+		}
 		fmt.Fprintln(os.Stderr, err)
 		return 1
-	}
-	if selected == nil {
-		fmt.Println("cancelled")
-		return 0
 	}
 	if len(selected) == 0 {
 		fmt.Println("nothing selected")
@@ -77,7 +84,7 @@ func run(args []string) int {
 	}
 
 	var chosen []flakeStatus
-	for _, lab := range parseSelectedLabels(selected) {
+	for _, lab := range selected {
 		st, ok := byLabel[lab]
 		if !ok {
 			fmt.Fprintf(os.Stderr, "unknown selection %q; skip\n", lab)
@@ -94,8 +101,12 @@ func run(args []string) int {
 	for i, st := range chosen {
 		names[i] = st.label
 	}
-	ok, err := fzfConfirm(fmt.Sprintf("Update locks for %s?", strings.Join(names, ", ")))
+	ok, err := confirmUpdate(names)
 	if err != nil {
+		if isCancel(err) {
+			fmt.Println("cancelled")
+			return 0
+		}
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
@@ -114,7 +125,7 @@ func run(args []string) int {
 	return 0
 }
 
-const helpText = `flake-up — survey ~/src flakes, fzf multi-select, update locks.
+const helpText = `flake-up — survey ~/src flakes, pick with Huh, update locks.
 
   flake-up          interactive UI
   flake-up --help   this text
@@ -123,8 +134,12 @@ Same action for every selected repo:
   nix flake update --flake <path>
   commit flake.lock if changed (jj or git)
 
-Does not run nh / OS switch. Pure fzf — no check/update subcommands.
+Does not run nh / OS switch. Interactive TUI only — no check/update subcommands.
 `
+
+func isCancel(err error) bool {
+	return err == huh.ErrUserAborted
+}
 
 func srcRoot() (string, error) {
 	home, err := os.UserHomeDir()
@@ -165,9 +180,6 @@ func labelFor(path, root string) string {
 	rel, err := filepath.Rel(root, path)
 	if err != nil {
 		return path
-	}
-	if !strings.Contains(rel, string(filepath.Separator)) {
-		return rel
 	}
 	return rel
 }
@@ -501,121 +513,107 @@ func lockedID(locked map[string]any) (key, val string, err error) {
 	return "", "", fmt.Errorf("lock has neither rev nor narHash")
 }
 
-// --- fzf ---
+// --- Huh UI ---
 
-func colorEnabled() bool {
-	if os.Getenv("NO_COLOR") != "" {
-		return false
-	}
-	fi, err := os.Stdout.Stat()
-	if err != nil {
-		return false
-	}
-	return (fi.Mode() & os.ModeCharDevice) != 0
-}
+var (
+	styleOK    = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))  // green
+	styleStale = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))  // red
+	styleErr   = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))  // yellow
+	styleMuted = lipgloss.NewStyle().Foreground(lipgloss.Color("8")) // gray
+)
 
-func paint(text, code string) string {
-	if !colorEnabled() {
-		return text
-	}
-	return "\033[" + code + "m" + text + "\033[0m"
-}
-
-func statusMark(k kind) string {
-	switch k {
+func optionLabel(st flakeStatus) string {
+	var mark string
+	switch st.kind {
 	case kindOK:
-		return paint("✓", "32")
+		mark = styleOK.Render("✓")
 	case kindStale:
-		return paint("✗", "31")
+		mark = styleStale.Render("✗")
 	default:
-		return paint("!", "33")
+		mark = styleErr.Render("!")
 	}
+	summary := statusSummary(st)
+	return fmt.Sprintf("%s  %s  %s", mark, st.label, styleMuted.Render(summary))
 }
 
-func fzfLines(statuses []flakeStatus) string {
-	var b strings.Builder
-	for _, st := range statuses {
-		var summary string
-		switch st.kind {
-		case kindOK:
-			summary = "up to date"
-		case kindStale:
-			names := make([]string, 0, len(st.details))
-			for _, d := range st.details {
-				if i := strings.Index(d, ":"); i >= 0 {
-					names = append(names, d[:i])
-				} else {
-					names = append(names, d)
-				}
-			}
-			summary = strings.Join(names, ", ")
-		default:
-			if len(st.details) > 0 {
-				summary = st.details[0]
+func statusSummary(st flakeStatus) string {
+	switch st.kind {
+	case kindOK:
+		return "up to date"
+	case kindStale:
+		names := make([]string, 0, len(st.details))
+		for _, d := range st.details {
+			if i := strings.Index(d, ":"); i >= 0 {
+				names = append(names, d[:i])
 			} else {
-				summary = "error"
+				names = append(names, d)
 			}
 		}
-		fmt.Fprintf(&b, "%s\t%s\t%s\n", statusMark(st.kind), st.label, summary)
+		return strings.Join(names, ", ")
+	default:
+		if len(st.details) > 0 {
+			return st.details[0]
+		}
+		return "error"
 	}
-	return b.String()
 }
 
-func fzfMulti(lines, prompt, header string) ([]string, error) {
-	if _, err := exec.LookPath("fzf"); err != nil {
-		return nil, fmt.Errorf("flake-up: fzf not found on PATH")
-	}
-	if !isInteractive() {
-		return nil, fmt.Errorf("flake-up: needs an interactive TTY")
-	}
-	cmd := exec.Command("fzf",
-		"--ansi",
-		"--multi",
-		"--delimiter=\t",
-		"--with-nth=1,2,3",
-		"--prompt="+prompt,
-		"--header="+header,
-		"--height=100%",
-		"--reverse",
-		"--bind=ctrl-a:toggle-all",
-	)
-	cmd.Stdin = strings.NewReader(lines)
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		// esc / non-zero = cancel
-		return nil, nil
-	}
-	var selected []string
-	for _, ln := range strings.Split(stdout.String(), "\n") {
-		if strings.TrimSpace(ln) != "" {
-			selected = append(selected, ln)
+// pickFlakes shows a multi-select; stale/error flakes start selected.
+func pickFlakes(statuses []flakeStatus) ([]string, error) {
+	opts := make([]huh.Option[string], 0, len(statuses))
+	var preselect []string
+	for _, st := range statuses {
+		opts = append(opts, huh.NewOption(optionLabel(st), st.label))
+		if st.kind == kindStale || st.kind == kindError {
+			preselect = append(preselect, st.label)
 		}
+	}
+
+	selected := append([]string(nil), preselect...)
+	height := len(statuses)
+	if height < 5 {
+		height = 5
+	}
+	if height > 16 {
+		height = 16
+	}
+
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewMultiSelect[string]().
+				Title("Flake inputs under ~/src").
+				Description("Space toggles · enter continues · stale pre-selected · ctrl+c cancel").
+				Options(opts...).
+				Value(&selected).
+				Height(height).
+				Filterable(true),
+		),
+	).WithTheme(huh.ThemeCharm())
+
+	if err := form.Run(); err != nil {
+		return nil, err
 	}
 	return selected, nil
 }
 
-func fzfConfirm(message string) (bool, error) {
-	if _, err := exec.LookPath("fzf"); err != nil {
-		return false, fmt.Errorf("flake-up: fzf not found on PATH")
+func confirmUpdate(names []string) (bool, error) {
+	var ok bool
+	msg := fmt.Sprintf("Update locks for %s?", strings.Join(names, ", "))
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title(msg).
+				Description("nix flake update + commit flake.lock (no nh switch)").
+				Affirmative("Update").
+				Negative("Cancel").
+				Value(&ok),
+		),
+	).WithTheme(huh.ThemeCharm())
+
+	if err := form.Run(); err != nil {
+		return false, err
 	}
-	cmd := exec.Command("fzf",
-		"--ansi",
-		"--prompt=confirm> ",
-		"--header="+message,
-		"--height=40%",
-		"--reverse",
-		"--no-multi",
-	)
-	cmd.Stdin = strings.NewReader("yes\nno\n")
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return false, nil
-	}
-	return strings.TrimSpace(stdout.String()) == "yes", nil
+	return ok, nil
 }
 
 func isInteractive() bool {
@@ -629,17 +627,6 @@ func isInteractive() bool {
 		}
 	}
 	return true
-}
-
-func parseSelectedLabels(selected []string) []string {
-	var labels []string
-	for _, line := range selected {
-		parts := strings.Split(line, "\t")
-		if len(parts) >= 2 {
-			labels = append(labels, strings.TrimSpace(parts[1]))
-		}
-	}
-	return labels
 }
 
 // --- update ---

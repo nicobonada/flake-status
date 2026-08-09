@@ -1,5 +1,5 @@
 {
-  description = "fzf UI to check/update flake inputs under ~/src";
+  description = "Huh TUI to check/update flake inputs under ~/src";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -21,20 +21,18 @@
             pname = "flake-up";
             version = "0.1.0";
             src = self;
-            # No third-party Go modules.
-            vendorHash = null;
+            vendorHash = "sha256-UdRyylHSZ/b89cEArilaw6LcAw0epmpH6yCOKOiw9Gw=";
+            env.CGO_ENABLED = "0";
             meta = {
-              description = "Survey ~/src flakes and update locks via fzf";
+              description = "Survey ~/src flakes and update locks via Huh";
               mainProgram = "flake-up";
             };
           };
-          # Wrap so nix/fzf/jj are available when run from a minimal PATH.
           wrapped = pkgs.writeShellApplication {
             name = "flake-up";
             runtimeInputs = with pkgs; [
               flake-up
               nix
-              fzf
               jujutsu
               git
             ];
@@ -45,7 +43,6 @@
         in
         {
           default = wrapped;
-          # Unwrapped binary (for debugging).
           flake-up-bin = flake-up;
         }
       );
@@ -61,7 +58,6 @@
               go
               gopls
               nix
-              fzf
               jujutsu
               git
             ];
