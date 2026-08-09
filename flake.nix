@@ -26,6 +26,7 @@
             meta = {
               description = "Survey ~/src flakes and update locks (two-pane TUI)";
               mainProgram = "flake-up";
+              license = pkgs.lib.licenses.mit;
             };
           };
           wrapped = pkgs.writeShellApplication {

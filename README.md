@@ -3,7 +3,8 @@
 Two-pane TUI for flake inputs under `~/src`: pick flakes, inspect inputs, update
 locks. Same behavior for every repo.
 
-Working personal tool — steal ideas freely.
+Working personal tool — steal ideas freely. **MIT** licensed (private for now;
+fine to treat like public).
 
 ## Usage
 
