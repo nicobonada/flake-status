@@ -22,7 +22,24 @@ func updateOne(path, label string) error {
 	if !fileExists(filepath.Join(path, "flake.nix")) {
 		return fmt.Errorf("not a flake root: %s", path)
 	}
-	if err := runCmd(path, "nix", "flake", "update", "--flake", path); err != nil {
+
+	// Update only non-skipped direct inputs so determinate (etc.) never floats
+	// to a FlakeHub prerelease via bulk `nix flake update`.
+	names, skipped, err := rootUpdateInputs(path)
+	if err != nil {
+		return err
+	}
+	if len(skipped) > 0 {
+		fmt.Printf("  skip (not bulk-updated): %s\n", strings.Join(skipped, ", "))
+	}
+	if len(names) == 0 {
+		fmt.Println("  (no bulk-updatable inputs; nothing to do)")
+		return nil
+	}
+
+	args := []string{"flake", "update", "--flake", path}
+	args = append(args, names...)
+	if err := runCmd(path, "nix", args...); err != nil {
 		return err
 	}
 	return commitLock(path)

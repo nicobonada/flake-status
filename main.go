@@ -100,7 +100,8 @@ Left: flake list (space toggle for update). Right: input status for focus.
   q / ctrl+c     quit
 
 Same action for every selected repo:
-  nix flake update --flake <path>
+  nix flake update --flake <path> <inputs…>
+  (skips bulk-excluded inputs such as determinate)
   commit flake.lock if changed (jj or git)
 
 Does not run nh / OS switch.

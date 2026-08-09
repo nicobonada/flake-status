@@ -17,7 +17,12 @@ flake-up
    - **Left:** flake list (✓ / ✗ / !)
    - **Right:** input status for the focused flake
 3. Mark flakes with **space**, confirm with **enter** / **u**
-4. Runs `nix flake update` + commits `flake.lock` (jj or git)
+4. Runs `nix flake update` for **bulk-updatable** inputs + commits `flake.lock` (jj or git)
+
+**Skipped inputs:** `determinate` (and FlakeHub `DeterminateSystems/determinate`) is never
+bulk-updated. The right pane labels it as skipped. Bump non-prerelease minors from
+`nix-config` with `scripts/update-determinate` instead — FlakeHub ranges can resolve
+to GitHub prereleases.
 
 Does **not** run `nh` or activate systems. Interactive only.
 

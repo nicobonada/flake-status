@@ -162,7 +162,11 @@ func (m *uiModel) refreshDetail() {
 
 	switch st.kind {
 	case kindOK:
-		fmt.Fprintf(&b, "%s\n", styleOK.Render("All inputs up to date."))
+		if len(st.notes) == 0 {
+			fmt.Fprintf(&b, "%s\n", styleOK.Render("All inputs up to date."))
+		} else {
+			fmt.Fprintf(&b, "%s\n", styleOK.Render("Bulk-updated inputs up to date."))
+		}
 	case kindError:
 		fmt.Fprintf(&b, "%s\n\n", styleErr.Render("Could not check this flake:"))
 		for _, d := range st.details {
@@ -182,6 +186,23 @@ func (m *uiModel) refreshDetail() {
 				rStyle = styleErr
 			}
 			fmt.Fprintf(&b, "  • %s  %s\n", lipgloss.NewStyle().Bold(true).Render(name), rStyle.Render(reason))
+		}
+	}
+
+	// Inputs that ride outside bulk update (e.g. determinate non-prerelease policy).
+	if len(st.notes) > 0 {
+		fmt.Fprintln(&b)
+		fmt.Fprintf(&b, "%s\n", styleMuted.Render("Skipped by flake-up (not updated with others):"))
+		for _, n := range st.notes {
+			name, reason, ok := strings.Cut(n, ": ")
+			if !ok {
+				fmt.Fprintf(&b, "  • %s\n", styleMuted.Render(n))
+				continue
+			}
+			fmt.Fprintf(&b, "  • %s  %s\n",
+				lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("8")).Render(name),
+				styleMuted.Render(reason),
+			)
 		}
 	}
 
@@ -372,7 +393,7 @@ func (m uiModel) View() string {
 		box := styleFocus.Padding(1, 2).Render(
 			styleTitle.Render("Update locks?") + "\n\n" +
 				strings.Join(names, ", ") + "\n\n" +
-				styleMuted.Render("nix flake update + commit flake.lock") + "\n\n" +
+				styleMuted.Render("nix flake update (skips determinate) + commit flake.lock") + "\n\n" +
 				styleHelp.Render("y/enter confirm  ·  n/esc cancel"),
 		)
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)

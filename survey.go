@@ -73,7 +73,30 @@ type flakeStatus struct {
 	label   string
 	kind    kind
 	details []string // e.g. "nixpkgs: stale"
+	// notes: always shown (e.g. inputs flake-up will not bulk-update)
+	notes []string
 }
+
+// Inputs that must not ride along with `nix flake update` of the whole flake.
+// Determinate is versioned for non-prerelease minors via nix-config's
+// scripts/update-determinate; FlakeHub ranges can resolve to GH prereleases.
+func isBulkUpdateSkipped(name string, original map[string]any) bool {
+	if name == "determinate" {
+		return true
+	}
+	if original == nil {
+		return false
+	}
+	t, _ := original["type"].(string)
+	if t != "tarball" {
+		return false
+	}
+	u, _ := original["url"].(string)
+	// Match FlakeHub + pinned archive URLs for this project.
+	return strings.Contains(u, "DeterminateSystems/determinate")
+}
+
+const skipBulkNote = "not bulk-updated with other inputs (use scripts/update-determinate in nix-config for non-prerelease minors)"
 
 type metaCache struct {
 	mu   sync.Mutex
@@ -125,8 +148,8 @@ func survey(paths []string, root string, cache *metaCache) []flakeStatus {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			label := labelFor(path, root)
-			stale, details, err := checkFlake(path, cache)
-			st := flakeStatus{path: path, label: label}
+			stale, details, notes, err := checkFlake(path, cache)
+			st := flakeStatus{path: path, label: label, notes: notes}
 			if err != nil {
 				st.kind = kindError
 				st.details = []string{err.Error()}
@@ -155,7 +178,106 @@ func survey(paths []string, root string, cache *metaCache) []flakeStatus {
 	return out
 }
 
-func checkFlake(flake string, cache *metaCache) (stale []string, details []string, err error) {
+func checkFlake(flake string, cache *metaCache) (stale []string, details []string, notes []string, err error) {
+	lockPath := filepath.Join(flake, "flake.lock")
+	raw, err := os.ReadFile(lockPath)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	var lock struct {
+		Root  string                     `json:"root"`
+		Nodes map[string]json.RawMessage `json:"nodes"`
+	}
+	if err := json.Unmarshal(raw, &lock); err != nil {
+		return nil, nil, nil, err
+	}
+	rootRaw, ok := lock.Nodes[lock.Root]
+	if !ok {
+		return nil, nil, nil, fmt.Errorf("root node %q missing", lock.Root)
+	}
+	var rootNode struct {
+		Inputs map[string]json.RawMessage `json:"inputs"`
+	}
+	if err := json.Unmarshal(rootRaw, &rootNode); err != nil {
+		return nil, nil, nil, err
+	}
+
+	type job struct {
+		name    string
+		node    json.RawMessage
+		skipped bool
+	}
+	var jobs []job
+	for name, ref := range rootNode.Inputs {
+		if len(ref) > 0 && ref[0] == '[' {
+			continue
+		}
+		var nodeKey string
+		if err := json.Unmarshal(ref, &nodeKey); err != nil {
+			continue
+		}
+		node, ok := lock.Nodes[nodeKey]
+		if !ok {
+			continue
+		}
+		var peek struct {
+			Original map[string]any `json:"original"`
+		}
+		_ = json.Unmarshal(node, &peek)
+		jobs = append(jobs, job{
+			name:    name,
+			node:    node,
+			skipped: isBulkUpdateSkipped(name, peek.Original),
+		})
+	}
+
+	type result struct {
+		name    string
+		reason  string
+		skipped bool
+	}
+	resCh := make(chan result, len(jobs))
+	var jwg sync.WaitGroup
+	sem := make(chan struct{}, 8)
+	for _, j := range jobs {
+		jwg.Add(1)
+		go func(j job) {
+			defer jwg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			if j.skipped {
+				resCh <- result{name: j.name, skipped: true}
+				return
+			}
+			reason := checkInput(j.node, cache)
+			resCh <- result{name: j.name, reason: reason}
+		}(j)
+	}
+	go func() {
+		jwg.Wait()
+		close(resCh)
+	}()
+
+	for r := range resCh {
+		if r.skipped {
+			notes = append(notes, fmt.Sprintf("%s: %s", r.name, skipBulkNote))
+			continue
+		}
+		if r.reason == "" {
+			continue
+		}
+		stale = append(stale, r.name)
+		details = append(details, fmt.Sprintf("%s: %s", r.name, r.reason))
+	}
+	sort.Strings(stale)
+	sort.Strings(details)
+	sort.Strings(notes)
+	return stale, details, notes, nil
+}
+
+// rootUpdateInputs lists direct flake inputs that may be passed to
+// `nix flake update <names…>` (excludes bulk-skip list).
+func rootUpdateInputs(flake string) (update []string, skipped []string, err error) {
 	lockPath := filepath.Join(flake, "flake.lock")
 	raw, err := os.ReadFile(lockPath)
 	if err != nil {
@@ -178,12 +300,6 @@ func checkFlake(flake string, cache *metaCache) (stale []string, details []strin
 	if err := json.Unmarshal(rootRaw, &rootNode); err != nil {
 		return nil, nil, err
 	}
-
-	type job struct {
-		name string
-		node json.RawMessage
-	}
-	var jobs []job
 	for name, ref := range rootNode.Inputs {
 		if len(ref) > 0 && ref[0] == '[' {
 			continue
@@ -196,41 +312,19 @@ func checkFlake(flake string, cache *metaCache) (stale []string, details []strin
 		if !ok {
 			continue
 		}
-		jobs = append(jobs, job{name: name, node: node})
-	}
-
-	type result struct {
-		name   string
-		reason string
-	}
-	resCh := make(chan result, len(jobs))
-	var jwg sync.WaitGroup
-	sem := make(chan struct{}, 8)
-	for _, j := range jobs {
-		jwg.Add(1)
-		go func(j job) {
-			defer jwg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			reason := checkInput(j.node, cache)
-			resCh <- result{name: j.name, reason: reason}
-		}(j)
-	}
-	go func() {
-		jwg.Wait()
-		close(resCh)
-	}()
-
-	for r := range resCh {
-		if r.reason == "" {
+		var peek struct {
+			Original map[string]any `json:"original"`
+		}
+		_ = json.Unmarshal(node, &peek)
+		if isBulkUpdateSkipped(name, peek.Original) {
+			skipped = append(skipped, name)
 			continue
 		}
-		stale = append(stale, r.name)
-		details = append(details, fmt.Sprintf("%s: %s", r.name, r.reason))
+		update = append(update, name)
 	}
-	sort.Strings(stale)
-	sort.Strings(details)
-	return stale, details, nil
+	sort.Strings(update)
+	sort.Strings(skipped)
+	return update, skipped, nil
 }
 
 func checkInput(nodeRaw json.RawMessage, cache *metaCache) string {
