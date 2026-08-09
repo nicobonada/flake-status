@@ -1,5 +1,5 @@
 {
-  description = "Huh TUI to check/update flake inputs under ~/src";
+  description = "Two-pane TUI to check/update flake inputs under ~/src";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -21,10 +21,10 @@
             pname = "flake-up";
             version = "0.1.0";
             src = self;
-            vendorHash = "sha256-UdRyylHSZ/b89cEArilaw6LcAw0epmpH6yCOKOiw9Gw=";
+            vendorHash = "sha256-TIAN4GVJC8SnnYGezzKTuaRCU7TeChUfrE1iJ+zLS+g=";
             env.CGO_ENABLED = "0";
             meta = {
-              description = "Survey ~/src flakes and update locks via Huh";
+              description = "Survey ~/src flakes and update locks (two-pane TUI)";
               mainProgram = "flake-up";
             };
           };

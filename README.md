@@ -1,8 +1,7 @@
 # flake-up
 
-Interactive survey of flake inputs under `~/src`, then a **Huh** multi-select to
-update locks. Same behavior for every repo — simple lazygit-adjacent pick list,
-not a full multi-panel TUI.
+Two-pane TUI for flake inputs under `~/src`: pick flakes, inspect inputs, update
+locks. Same behavior for every repo.
 
 Working personal tool — steal ideas freely.
 
@@ -12,16 +11,28 @@ Working personal tool — steal ideas freely.
 flake-up
 ```
 
-1. Finds every `~/src/*` with `flake.nix` + `flake.lock`
-2. Checks inputs (`nix flake metadata`, cached per URL)
-3. **Huh** multi-select (stale pre-selected; filterable)
-4. Confirm update
-5. For each selection: `nix flake update` + commit `flake.lock` (jj or git)
+1. Surveys every `~/src/*` with `flake.nix` + `flake.lock`
+2. Opens a **two-pane** UI (Bubble Tea):
+   - **Left:** flake list (✓ / ✗ / !)
+   - **Right:** input status for the focused flake
+3. Mark flakes with **space**, confirm with **enter** / **u**
+4. Runs `nix flake update` + commits `flake.lock` (jj or git)
 
-Does **not** run `nh` or activate systems. Interactive only — no CLI subcommands.
-`--help` prints a short blurb.
+Does **not** run `nh` or activate systems. Interactive only.
 
-Keys (Huh defaults): space toggle, enter submit, `/` filter when enabled, ctrl+c cancel.
+### Keys
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` or arrows | Move in list |
+| `space` | Toggle mark for update |
+| `a` | Select / clear all stale+error |
+| `enter` or `u` | Confirm update of marked flakes |
+| `/` | Filter list |
+| `pgup` / `pgdn` | Scroll detail pane |
+| `q` / `ctrl+c` | Quit |
+
+Stale and error flakes start **marked**.
 
 ## Develop
 
@@ -29,29 +40,18 @@ Keys (Huh defaults): space toggle, enter submit, `/` filter when enabled, ctrl+c
 cd ~/src/flake-up
 nix develop
 go run .
-# or
-go build -o flake-up . && ./flake-up
 ```
 
-Package: `nix build` / `nix run`.
-
-After Go edits that should hit PATH via home-manager:
-
-```fish
-nh home switch ~/src/nix-config
-```
-
-## Install
-
-`~/src/nix-config` takes this flake as a path input and puts `flake-up` on the
-interactive PATH (`home/programs/flake-up.nix`).
+`nix build` / `nix run`. After Go changes for PATH via HM: `nh home switch ~/src/nix-config`.
 
 ## Layout
 
 | Path | Role |
 |------|------|
-| `main.go` | Program (survey + Huh + update) |
-| `flake.nix` | Package + devShell |
+| `main.go` | Entry |
+| `ui.go` | Two-pane Bubble Tea UI |
+| `survey.go` | Lock check / metadata cache |
+| `update.go` | `nix flake update` + commit |
 
 ## Agents
 
