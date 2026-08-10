@@ -1,5 +1,5 @@
 {
-  description = "Two-pane TUI to survey flake inputs under ~/src";
+  description = "Two-pane status dashboard for flakes under ~/src";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -17,34 +17,34 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          flake-up = pkgs.buildGoModule {
-            pname = "flake-up";
+          flake-status = pkgs.buildGoModule {
+            pname = "flake-status";
             version = "0.1.0";
             src = self;
             vendorHash = "sha256-TIAN4GVJC8SnnYGezzKTuaRCU7TeChUfrE1iJ+zLS+g=";
             env.CGO_ENABLED = "0";
             meta = {
-              description = "Survey flake inputs and VCS alignment under ~/src (read-only TUI)";
-              mainProgram = "flake-up";
+              description = "Status dashboard for flake inputs and VCS under ~/src (read-only TUI)";
+              mainProgram = "flake-status";
               license = pkgs.lib.licenses.mit;
             };
           };
           wrapped = pkgs.writeShellApplication {
-            name = "flake-up";
+            name = "flake-status";
             runtimeInputs = with pkgs; [
-              flake-up
+              flake-status
               nix
               jujutsu
               git
             ];
             text = ''
-              exec ${pkgs.lib.getExe flake-up} "$@"
+              exec ${pkgs.lib.getExe flake-status} "$@"
             '';
           };
         in
         {
           default = wrapped;
-          flake-up-bin = flake-up;
+          flake-status-bin = flake-status;
         }
       );
 

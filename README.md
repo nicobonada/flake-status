@@ -1,17 +1,19 @@
-# flake-up
+# flake-status
 
-Two-pane TUI that **surveys** flake inputs under `~/src`: which locks are behind,
-which exact version pins have a newer release, and whether `wip` / `main` / origin line up.
+Two-pane **status dashboard** for flakes under `~/src`: which locks are behind,
+which exact version pins have a newer release, and whether `wip` / `main` / origin
+line up.
 
 Working personal tool — steal ideas freely. **MIT** licensed.
 
-**Read-only:** this app does not update locks or activate systems. Use
-`nix flake update` (or your own pin scripts) when you decide to bump something.
+**Read-only:** surfaces potential problems; it does not update locks or activate
+systems. Use `nix flake update` (or your own pin scripts) when you decide to bump
+something.
 
 ## Usage
 
 ```fish
-flake-up
+flake-status
 ```
 
 1. Discovers every `~/src/*` with `flake.nix` + `flake.lock`
@@ -39,7 +41,7 @@ flake-up
 
 Left-list rollup: any red finding on the right → red; else any amber → amber; else green.
 
-**Exact pins:** if the flake ref pins a version with `=` (often URL-encoded as `%3D` in the path), metadata of that ref always resolves to the pin. flake-up compares the lock to a floating tip (`*` in place of the pin segment) and shows amber `!` when a newer release exists — host-agnostic, not tied to one vendor.
+**Exact pins:** if the flake ref pins a version with `=` (often URL-encoded as `%3D` in the path), metadata of that ref always resolves to the pin. flake-status compares the lock to a floating tip (`*` in place of the pin segment) and shows amber `!` when a newer release exists — host-agnostic, not tied to one vendor.
 
 VCS compares `wip`, `main`, and `main@origin` when using [Jujutsu](https://jj-vcs.github.io/jj/); git repos show `main` vs `origin/main`. An empty parked `wip` on `main` counts as aligned. Remotes are fetched with limited concurrency.
 
@@ -51,12 +53,12 @@ nix flake update --flake ~/src/myflake nixpkgs home-manager
 ```
 
 How you bump an exact pin (and whether to allow prereleases) stays outside this
-tool — flake-up only reports that a newer floating tip exists.
+tool — flake-status only reports that a newer floating tip exists.
 
 ## Develop
 
 ```fish
-cd ~/src/flake-up
+cd ~/src/flake-status
 nix develop
 go run .
 ```

@@ -1,4 +1,4 @@
-module github.com/nicobonada/flake-up
+module github.com/nicobonada/flake-status
 
 go 1.23.0
 

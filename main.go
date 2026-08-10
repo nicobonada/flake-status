@@ -1,7 +1,7 @@
-// flake-up: survey flake inputs under ~/src in a two-pane TUI.
+// flake-status: two-pane status dashboard for flakes under ~/src.
 //
-// Read-only status dashboard — does not update locks or activate systems.
-// For updates, use nix flake update (or project-specific pin scripts) outside.
+// Read-only — surfaces potential problems (stale inputs, exact-pin lag, VCS
+// drift). Does not update locks or activate systems.
 package main
 
 import (
@@ -21,13 +21,13 @@ func run(args []string) int {
 		return 0
 	}
 	if len(args) > 0 {
-		fmt.Fprintln(os.Stderr, "flake-up: interactive TUI only — no CLI subcommands.")
+		fmt.Fprintln(os.Stderr, "flake-status: interactive TUI only — no CLI subcommands.")
 		fmt.Fprintln(os.Stderr, "  Run with no arguments.")
 		return 2
 	}
 
 	if !isInteractive() {
-		fmt.Fprintln(os.Stderr, "flake-up: needs an interactive TTY")
+		fmt.Fprintln(os.Stderr, "flake-status: needs an interactive TTY")
 		return 1
 	}
 
@@ -61,12 +61,12 @@ func run(args []string) int {
 	return 0
 }
 
-const helpText = `flake-up — two-pane survey of flakes under ~/src.
+const helpText = `flake-status — status dashboard for flakes under ~/src.
 
-  flake-up          interactive UI
-  flake-up --help   this text
+  flake-status          interactive UI
+  flake-status --help   this text
 
-Read-only status dashboard (does not update locks).
+Read-only: shows potential problems (does not update locks).
 
 Left:  flake list — severity from the worst finding on the right
 Right: focused flake (border title) — path, VCS, every root input
@@ -89,7 +89,7 @@ floating tip ("*") so amber means "an update exists", not "lock ≠ pin".
 VCS uses local tools (jj preferred, else git) and fetches remotes with
 limited concurrency. Empty parked wip on main counts as aligned with main.
 
-Updates are intentional and out of band, for example:
+To update locks (out of band), for example:
 
   nix flake update --flake ~/src/myflake
   nix flake update --flake ~/src/myflake nixpkgs
