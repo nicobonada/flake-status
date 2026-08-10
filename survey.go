@@ -63,9 +63,10 @@ func labelFor(path, root string) string {
 type kind string
 
 const (
-	kindOK    kind = "ok"
-	kindStale kind = "stale"
-	kindError kind = "error"
+	kindPending kind = "pending" // survey still running for this flake
+	kindOK      kind = "ok"
+	kindStale   kind = "stale"
+	kindError   kind = "error"
 )
 
 type flakeStatus struct {
@@ -128,12 +129,23 @@ func (c *metaCache) get(url string) (map[string]any, error) {
 	return meta, err
 }
 
-func survey(paths []string, root string, cache *metaCache) []flakeStatus {
-	type item struct {
-		path string
-		st   flakeStatus
+// pendingStatuses builds the initial list shown before metadata checks finish.
+func pendingStatuses(paths []string, root string) []flakeStatus {
+	out := make([]flakeStatus, 0, len(paths))
+	for _, p := range paths {
+		out = append(out, flakeStatus{
+			path:  p,
+			label: labelFor(p, root),
+			kind:  kindPending,
+		})
 	}
-	ch := make(chan item, len(paths))
+	return out
+}
+
+// surveyStream checks flakes concurrently and sends each result as it completes.
+// The channel is closed when all work is done.
+func surveyStream(paths []string, root string, cache *metaCache) <-chan flakeStatus {
+	ch := make(chan flakeStatus, len(paths))
 	var wg sync.WaitGroup
 	workers := len(paths)
 	if workers > 8 {
@@ -159,23 +171,14 @@ func survey(paths []string, root string, cache *metaCache) []flakeStatus {
 				st.kind = kindStale
 				st.details = details
 			}
-			ch <- item{path: path, st: st}
+			ch <- st
 		}(p)
 	}
 	go func() {
 		wg.Wait()
 		close(ch)
 	}()
-
-	byPath := make(map[string]flakeStatus, len(paths))
-	for it := range ch {
-		byPath[it.path] = it.st
-	}
-	out := make([]flakeStatus, 0, len(paths))
-	for _, p := range paths {
-		out = append(out, byPath[p])
-	}
-	return out
+	return ch
 }
 
 func checkFlake(flake string, cache *metaCache) (stale []string, details []string, notes []string, err error) {

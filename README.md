@@ -12,12 +12,13 @@ fine to treat like public).
 flake-up
 ```
 
-1. Surveys every `~/src/*` with `flake.nix` + `flake.lock`
-2. Opens a **two-pane** UI (Bubble Tea):
-   - **Left:** flake list (✓ / ✗ / !)
+1. Discovers every `~/src/*` with `flake.nix` + `flake.lock` and **opens the UI immediately**
+2. Metadata checks run in the background; list rows fill in as each flake finishes (footer spinner + `checking n/N`)
+3. Two-pane UI (Bubble Tea):
+   - **Left:** flake list (… pending / ✓ / ✗ / !)
    - **Right:** input status for the focused flake
-3. Mark flakes with **space**, confirm with **enter** / **u**
-4. Runs `nix flake update` for **bulk-updatable** inputs + commits `flake.lock` (jj or git)
+4. Mark flakes with **space**, confirm with **enter** / **u**
+5. Runs `nix flake update` for **bulk-updatable** inputs + commits `flake.lock` (jj or git)
 
 **Skipped inputs:** `determinate` (and FlakeHub `DeterminateSystems/determinate`) is never
 bulk-updated. The right pane labels it as skipped. Bump non-prerelease minors from

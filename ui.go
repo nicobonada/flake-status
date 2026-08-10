@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -13,6 +14,7 @@ import (
 
 // Two-pane TUI: left = flake list, right = input status for focused flake.
 // Space toggles selection for update; enter/u confirms and quits to run updates.
+// Metadata checks stream in after the UI is already visible.
 
 var (
 	styleTitle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
@@ -25,6 +27,10 @@ var (
 	styleSel    = lipgloss.NewStyle().Foreground(lipgloss.Color("11")) // selected for update
 	styleFocus  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("12"))
 )
+
+// Messages from the background survey.
+type surveyResultMsg struct{ st flakeStatus }
+type surveyDoneMsg struct{}
 
 type flakeItem struct {
 	st       flakeStatus
@@ -52,6 +58,8 @@ func (i flakeItem) FilterValue() string {
 
 func statusMark(k kind) string {
 	switch k {
+	case kindPending:
+		return styleMuted.Render("…")
 	case kindOK:
 		return styleOK.Render("✓")
 	case kindStale:
@@ -63,6 +71,8 @@ func statusMark(k kind) string {
 
 func statusSummary(st flakeStatus) string {
 	switch st.kind {
+	case kindPending:
+		return "checking…"
 	case kindOK:
 		return "up to date"
 	case kindStale:
@@ -87,6 +97,11 @@ type uiModel struct {
 	statuses  []flakeStatus
 	list      list.Model
 	detail    viewport.Model
+	spinner   spinner.Model
+	surveyCh  <-chan flakeStatus
+	checking  bool
+	checked   int
+	total     int
 	width     int
 	height    int
 	ready     bool
@@ -95,10 +110,10 @@ type uiModel struct {
 	toUpdate  []flakeStatus // set on successful confirm quit
 }
 
-func newUI(statuses []flakeStatus) uiModel {
+func newUI(statuses []flakeStatus, surveyCh <-chan flakeStatus) uiModel {
 	items := make([]list.Item, len(statuses))
 	for i, st := range statuses {
-		// Pre-select stale/error for update.
+		// Pending flakes are not selected; stale/error get pre-selected as they arrive.
 		sel := st.kind == kindStale || st.kind == kindError
 		items[i] = flakeItem{st: st, selected: sel}
 	}
@@ -129,6 +144,10 @@ func newUI(statuses []flakeStatus) uiModel {
 		}
 	}
 
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
+
 	vp := viewport.New(0, 0)
 	vp.SetContent("")
 
@@ -136,9 +155,24 @@ func newUI(statuses []flakeStatus) uiModel {
 		statuses: statuses,
 		list:     l,
 		detail:   vp,
+		spinner:  sp,
+		surveyCh: surveyCh,
+		checking: surveyCh != nil,
+		total:    len(statuses),
 	}
 	m.refreshDetail()
 	return m
+}
+
+// waitSurvey blocks until the next survey result (or channel close).
+func waitSurvey(ch <-chan flakeStatus) tea.Cmd {
+	return func() tea.Msg {
+		st, ok := <-ch
+		if !ok {
+			return surveyDoneMsg{}
+		}
+		return surveyResultMsg{st: st}
+	}
 }
 
 func (m *uiModel) focusedStatus() *flakeStatus {
@@ -147,6 +181,31 @@ func (m *uiModel) focusedStatus() *flakeStatus {
 		return nil
 	}
 	return &item.st
+}
+
+func (m *uiModel) applySurveyResult(st flakeStatus) {
+	items := m.list.Items()
+	for i, raw := range items {
+		it, ok := raw.(flakeItem)
+		if !ok || it.st.path != st.path {
+			continue
+		}
+		it.st = st
+		// Match old behavior: auto-mark stale/error for update as they finish.
+		it.selected = st.kind == kindStale || st.kind == kindError
+		items[i] = it
+		break
+	}
+	m.list.SetItems(items)
+	m.checked++
+	// Keep statuses slice in sync for any code reading it.
+	for i := range m.statuses {
+		if m.statuses[i].path == st.path {
+			m.statuses[i] = st
+			break
+		}
+	}
+	m.refreshDetail()
 }
 
 func (m *uiModel) refreshDetail() {
@@ -161,6 +220,8 @@ func (m *uiModel) refreshDetail() {
 	fmt.Fprintf(&b, "%s\n\n", styleMuted.Render(st.path))
 
 	switch st.kind {
+	case kindPending:
+		fmt.Fprintf(&b, "%s %s\n", m.spinner.View(), styleMuted.Render("Checking inputs…"))
 	case kindOK:
 		if len(st.notes) == 0 {
 			fmt.Fprintf(&b, "%s\n", styleOK.Render("All inputs up to date."))
@@ -206,12 +267,15 @@ func (m *uiModel) refreshDetail() {
 		}
 	}
 
-	// Selection state for this flake
+	// Selection state for this flake (pending cannot be updated yet).
 	if item, ok := m.list.SelectedItem().(flakeItem); ok {
 		fmt.Fprintln(&b)
-		if item.selected {
+		switch {
+		case st.kind == kindPending:
+			fmt.Fprintf(&b, "%s\n", styleMuted.Render("… still checking — mark after result arrives"))
+		case item.selected:
 			fmt.Fprintf(&b, "%s\n", styleSel.Render("● marked for update"))
-		} else {
+		default:
 			fmt.Fprintf(&b, "%s\n", styleMuted.Render("○ not marked — space to toggle"))
 		}
 	}
@@ -221,6 +285,9 @@ func (m *uiModel) refreshDetail() {
 }
 
 func (m uiModel) Init() tea.Cmd {
+	if m.checking && m.surveyCh != nil {
+		return tea.Batch(m.spinner.Tick, waitSurvey(m.surveyCh))
+	}
 	return nil
 }
 
@@ -233,6 +300,30 @@ func (m uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.layout()
 		m.ready = true
+		m.refreshDetail()
+		return m, nil
+
+	case spinner.TickMsg:
+		if m.checking {
+			var cmd tea.Cmd
+			m.spinner, cmd = m.spinner.Update(msg)
+			// Keep the focused detail spinner frame fresh.
+			if st := m.focusedStatus(); st != nil && st.kind == kindPending {
+				m.refreshDetail()
+			}
+			return m, cmd
+		}
+		return m, nil
+
+	case surveyResultMsg:
+		m.applySurveyResult(msg.st)
+		if m.checking && m.surveyCh != nil {
+			return m, waitSurvey(m.surveyCh)
+		}
+		return m, nil
+
+	case surveyDoneMsg:
+		m.checking = false
 		m.refreshDetail()
 		return m, nil
 
@@ -311,6 +402,10 @@ func (m *uiModel) toggleSelected() {
 	if !ok {
 		return
 	}
+	// Don't mark flakes that haven't finished checking yet.
+	if it.st.kind == kindPending {
+		return
+	}
 	it.selected = !it.selected
 	items[idx] = it
 	m.list.SetItems(items)
@@ -347,7 +442,7 @@ func (m uiModel) selectedStatuses() []flakeStatus {
 	var out []flakeStatus
 	for _, raw := range m.list.Items() {
 		it, ok := raw.(flakeItem)
-		if ok && it.selected {
+		if ok && it.selected && it.st.kind != kindPending {
 			out = append(out, it.st)
 		}
 	}
@@ -415,8 +510,14 @@ func (m uiModel) View() string {
 
 	body := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 	help := styleHelp.Render("space toggle · a stale · enter/u update · / filter · pgup/pgdn detail · q quit")
-	nSel := len(m.selectedStatuses())
-	status := styleMuted.Render(fmt.Sprintf("%d marked for update", nSel))
+
+	var status string
+	if m.checking {
+		status = styleMuted.Render(fmt.Sprintf("%s checking %d/%d", m.spinner.View(), m.checked, m.total))
+	} else {
+		nSel := len(m.selectedStatuses())
+		status = styleMuted.Render(fmt.Sprintf("%d marked for update", nSel))
+	}
 	footer := lipgloss.JoinHorizontal(lipgloss.Top,
 		help,
 		strings.Repeat(" ", max(1, m.width-lipgloss.Width(help)-lipgloss.Width(status)-1)),

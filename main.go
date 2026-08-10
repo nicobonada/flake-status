@@ -48,16 +48,12 @@ func run(args []string) int {
 		return 1
 	}
 
-	labels := make([]string, len(paths))
-	for i, p := range paths {
-		labels[i] = labelFor(p, srcRoot)
-	}
-	fmt.Printf("checking %d flake(s) under %s: %s …\n", len(paths), srcRoot, stringsJoin(labels, ", "))
-
+	// Show the UI immediately with pending rows; metadata checks stream in.
 	cache := newMetaCache()
-	statuses := survey(paths, srcRoot, cache)
+	statuses := pendingStatuses(paths, srcRoot)
+	ch := surveyStream(paths, srcRoot, cache)
 
-	m := newUI(statuses)
+	m := newUI(statuses, ch)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	final, err := p.Run()
 	if err != nil {
@@ -106,17 +102,6 @@ Same action for every selected repo:
 
 Does not run nh / OS switch.
 `
-
-func stringsJoin(ss []string, sep string) string {
-	if len(ss) == 0 {
-		return ""
-	}
-	out := ss[0]
-	for i := 1; i < len(ss); i++ {
-		out += sep + ss[i]
-	}
-	return out
-}
 
 func isInteractive() bool {
 	for _, f := range []*os.File{os.Stdin, os.Stdout} {
