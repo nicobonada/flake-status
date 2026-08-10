@@ -86,7 +86,7 @@ const (
 type inputStatus struct {
 	Name   string
 	State  inputState
-	Pin    bool   // policy pin (determinate / FlakeHub determinate tarball)
+	Pin    bool   // exact "=" version pin in the flake ref (see isExactVersionPin)
 	Detail string // short reason: "stale", "3.21.9 → 3.22.1", error text
 }
 
@@ -131,21 +131,59 @@ func (st flakeStatus) needsAttention() bool {
 	}
 }
 
-// isPinInput marks inputs that are intentionally versioned outside routine bulk
-// bumps (Determinate). We still check tip drift for display; updates stay out of band.
-func isPinInput(name string, original map[string]any) bool {
-	if name == "determinate" {
-		return true
-	}
+// isExactVersionPin reports whether the input uses an exact version pin via the
+// "=" operator in the flake ref (any host — commonly in versioned flake URLs).
+// Metadata of that ref always resolves to the pin itself, so tip checks must
+// query a floating rewrite (floatingTipRef) to see if a newer release exists.
+func isExactVersionPin(original map[string]any) bool {
 	if original == nil {
 		return false
 	}
-	t, _ := original["type"].(string)
-	if t != "tarball" {
+	if ref, err := flakeRef(original); err == nil && hasExactVersionOperator(ref) {
+		return true
+	}
+	// flakeRef may fail for odd types; still inspect raw URL fields.
+	if u, ok := original["url"].(string); ok && hasExactVersionOperator(u) {
+		return true
+	}
+	return false
+}
+
+// hasExactVersionOperator detects "=" / "%3D" exact-version segments in a ref.
+func hasExactVersionOperator(ref string) bool {
+	if ref == "" {
 		return false
 	}
-	u, _ := original["url"].(string)
-	return strings.Contains(u, "DeterminateSystems/determinate")
+	if strings.Contains(strings.ToLower(ref), "%3d") {
+		return true
+	}
+	for _, seg := range strings.Split(ref, "/") {
+		seg, _, _ = strings.Cut(seg, "?")
+		if strings.HasPrefix(seg, "=") {
+			return true
+		}
+	}
+	return false
+}
+
+// floatingTipRef rewrites an exact "=" pin ref so metadata resolves to the
+// latest matching release (version segment → "*").
+func floatingTipRef(ref string) string {
+	parts := strings.Split(ref, "/")
+	for i := len(parts) - 1; i >= 0; i-- {
+		seg := parts[i]
+		base, query, hasQuery := strings.Cut(seg, "?")
+		lower := strings.ToLower(base)
+		if strings.HasPrefix(base, "=") || strings.HasPrefix(lower, "%3d") {
+			if hasQuery {
+				parts[i] = "*" + "?" + query
+			} else {
+				parts[i] = "*"
+			}
+			return strings.Join(parts, "/")
+		}
+	}
+	return ref
 }
 
 type metaCache struct {
@@ -340,7 +378,7 @@ func checkFlakeInputs(flake string, cache *metaCache) ([]inputStatus, error) {
 		jobs = append(jobs, job{
 			name: name,
 			node: node,
-			pin:  isPinInput(name, peek.Original),
+			pin:  isExactVersionPin(peek.Original),
 		})
 	}
 
@@ -409,7 +447,12 @@ func checkInputStatus(name string, nodeRaw json.RawMessage, pin bool, cache *met
 		base.Detail = err.Error()
 		return base
 	}
-	meta, err := cache.get(url)
+	// Exact "=" pins always resolve to themselves; ask floating tip for "is there an update?".
+	metaURL := url
+	if pin {
+		metaURL = floatingTipRef(url)
+	}
+	meta, err := cache.get(metaURL)
 	if err != nil {
 		base.State = inputError
 		base.Detail = err.Error()
@@ -438,7 +481,7 @@ func checkInputStatus(name string, nodeRaw json.RawMessage, pin bool, cache *met
 		return base
 	}
 
-	// Behind tip: pin-style gets amber semantics; others are normal stale.
+	// Behind tip: exact pins → amber "!"; floating inputs → red "✗".
 	detail := formatBehindDetail(node.Locked, meta, haveV, tipV)
 	if pin {
 		base.State = inputPin
@@ -487,22 +530,28 @@ func shortRefLabel(m map[string]any, fallback string) string {
 }
 
 func versionFromURL(u string) string {
-	// e.g. .../v3.21.9.tar.gz or .../3.21.9/...
-	base := u
-	if i := strings.LastIndex(u, "/"); i >= 0 {
-		base = u[i+1:]
-	}
-	base = strings.TrimSuffix(base, ".tar.gz")
-	base = strings.TrimSuffix(base, ".tgz")
-	base = strings.TrimSuffix(base, ".tar.zst")
-	base = strings.TrimPrefix(base, "v")
-	// crude: digit-led version
-	if len(base) > 0 && base[0] >= '0' && base[0] <= '9' && strings.Contains(base, ".") {
-		// strip query
-		if i := strings.IndexAny(base, "?#"); i >= 0 {
-			base = base[:i]
+	// Prefer path segments: =3.21.9, %3D3.21.9, or …/3.21.9/… in pinned archives.
+	for _, seg := range strings.Split(u, "/") {
+		seg, _, _ = strings.Cut(seg, "?")
+		seg, _, _ = strings.Cut(seg, "#")
+		seg = strings.TrimSuffix(seg, ".tar.gz")
+		seg = strings.TrimSuffix(seg, ".tgz")
+		seg = strings.TrimSuffix(seg, ".tar.zst")
+		lower := strings.ToLower(seg)
+		switch {
+		case strings.HasPrefix(seg, "="):
+			seg = strings.TrimPrefix(seg, "=")
+		case strings.HasPrefix(lower, "%3d"):
+			seg = seg[len("%3D"):] // length same for %3d
+			if len(seg) > 0 && (seg[0] == 'v' || seg[0] == 'V') {
+				// keep optional v below
+			}
 		}
-		return base
+		seg = strings.TrimPrefix(seg, "v")
+		seg = strings.TrimPrefix(seg, "V")
+		if len(seg) > 0 && seg[0] >= '0' && seg[0] <= '9' && strings.Contains(seg, ".") {
+			return seg
+		}
 	}
 	return ""
 }

@@ -1,7 +1,7 @@
 # flake-up
 
 Two-pane TUI that **surveys** flake inputs under `~/src`: which locks are behind,
-which pin-style inputs lag tip, and whether `wip` / `main` / origin line up.
+which exact version pins have a newer release, and whether `wip` / `main` / origin line up.
 
 Working personal tool — steal ideas freely. **MIT** licensed.
 
@@ -33,11 +33,13 @@ flake-up
 | Glyph | Color | Meaning |
 |-------|--------|---------|
 | `✓` | green | Ok |
-| `!` | amber | Pin lag (e.g. Determinate) and/or VCS drift |
-| `✗` | red | Stale input or error |
+| `!` | amber | Exact `=` version pin has a newer release, and/or VCS drift |
+| `✗` | red | Floating input behind tip or error |
 | `…` | muted | Still checking |
 
 Left-list rollup: any red finding on the right → red; else any amber → amber; else green.
+
+**Exact pins:** if the flake ref pins a version with `=` (often URL-encoded as `%3D` in the path), metadata of that ref always resolves to the pin. flake-up compares the lock to a floating tip (`*` in place of the pin segment) and shows amber `!` when a newer release exists — host-agnostic, not tied to one vendor.
 
 VCS compares `wip`, `main`, and `main@origin` when using [Jujutsu](https://jj-vcs.github.io/jj/); git repos show `main` vs `origin/main`. An empty parked `wip` on `main` counts as aligned. Remotes are fetched with limited concurrency.
 
@@ -48,8 +50,8 @@ nix flake update --flake ~/src/myflake
 nix flake update --flake ~/src/myflake nixpkgs home-manager
 ```
 
-Pin policies (for example Determinate non-prerelease bumps) stay in whatever
-scripts or process you already use — flake-up only reports tip drift.
+How you bump an exact pin (and whether to allow prereleases) stays outside this
+tool — flake-up only reports that a newer floating tip exists.
 
 ## Develop
 

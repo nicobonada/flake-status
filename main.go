@@ -79,9 +79,12 @@ Keys:
 
 Severity (left list and input rows):
   ✓  green  — ok
-  !  amber  — pin lag and/or VCS drift (wip/main/origin)
-  ✗  red    — stale input or error
+  !  amber  — exact "=" version pin has a newer release, and/or VCS drift
+  ✗  red    — floating input behind tip or error
   …  pending
+
+Exact pins (flake ref version segment uses "=" / "%3D") are compared to a
+floating tip ("*") so amber means "an update exists", not "lock ≠ pin".
 
 VCS uses local tools (jj preferred, else git) and fetches remotes with
 limited concurrency. Empty parked wip on main counts as aligned with main.
