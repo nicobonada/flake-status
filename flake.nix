@@ -1,5 +1,5 @@
 {
-  description = "Two-pane TUI to check/update flake inputs under ~/src";
+  description = "Two-pane TUI to survey flake inputs under ~/src";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -24,7 +24,7 @@
             vendorHash = "sha256-TIAN4GVJC8SnnYGezzKTuaRCU7TeChUfrE1iJ+zLS+g=";
             env.CGO_ENABLED = "0";
             meta = {
-              description = "Survey ~/src flakes and update locks (two-pane TUI)";
+              description = "Survey flake inputs and VCS alignment under ~/src (read-only TUI)";
               mainProgram = "flake-up";
               license = pkgs.lib.licenses.mit;
             };

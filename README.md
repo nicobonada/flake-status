@@ -1,10 +1,12 @@
 # flake-up
 
-Two-pane TUI for flake inputs under `~/src`: pick flakes, inspect inputs, update
-locks. Same behavior for every repo.
+Two-pane TUI that **surveys** flake inputs under `~/src`: which locks are behind,
+which pin-style inputs lag tip, and whether `wip` / `main` / origin line up.
 
-Working personal tool — steal ideas freely. **MIT** licensed (private for now;
-fine to treat like public).
+Working personal tool — steal ideas freely. **MIT** licensed.
+
+**Read-only:** this app does not update locks or activate systems. Use
+`nix flake update` (or your own pin scripts) when you decide to bump something.
 
 ## Usage
 
@@ -12,34 +14,40 @@ fine to treat like public).
 flake-up
 ```
 
-1. Discovers every `~/src/*` with `flake.nix` + `flake.lock` and **opens the UI immediately**
-2. Metadata checks run in the background; list rows fill in as each flake finishes (footer spinner + `checking n/N`)
-3. Two-pane UI (Bubble Tea):
-   - **Left:** flake list (… pending / ✓ / ✗ / !)
-   - **Right:** input status for the focused flake
-4. Mark flakes with **space**, confirm with **enter** / **u**
-5. Runs `nix flake update` for **bulk-updatable** inputs + commits `flake.lock` (jj or git)
-
-**Skipped inputs:** `determinate` (and FlakeHub `DeterminateSystems/determinate`) is never
-bulk-updated. The right pane labels it as skipped. Bump non-prerelease minors from
-`nix-config` with `scripts/update-determinate` instead — FlakeHub ranges can resolve
-to GitHub prereleases.
-
-Does **not** run `nh` or activate systems. Interactive only.
+1. Discovers every `~/src/*` with `flake.nix` + `flake.lock`
+2. Opens the UI immediately; checks stream in (footer spinner + `checking n/N`)
+3. **Left:** flake list (`✓` / `✗` / `!` pin lag / `…` pending)
+4. **Right:** VCS strip + every root input with status
 
 ### Keys
 
 | Key | Action |
 |-----|--------|
 | `j` / `k` or arrows | Move in list |
-| `space` | Toggle mark for update |
-| `a` | Select / clear all stale+error |
-| `enter` or `u` | Confirm update of marked flakes |
 | `/` | Filter list |
 | `pgup` / `pgdn` | Scroll detail pane |
 | `q` / `ctrl+c` | Quit |
 
-Stale and error flakes start **marked**.
+### Marks
+
+| Glyph | Meaning |
+|-------|---------|
+| `✓` | Input at tip / flake ok |
+| `✗` | Input (or flake) behind tip or error |
+| `!` | Pin-style input behind tip (e.g. Determinate) — amber |
+| `…` | Still checking |
+
+VCS line compares `wip`, `main`, and `main@origin` when using [Jujutsu](https://jj-vcs.github.io/jj/); git repos show `main` vs `origin/main`. An empty parked `wip` on `main` counts as aligned. Remotes are fetched with limited concurrency.
+
+### Updating locks (outside this tool)
+
+```fish
+nix flake update --flake ~/src/myflake
+nix flake update --flake ~/src/myflake nixpkgs home-manager
+```
+
+Pin policies (for example Determinate non-prerelease bumps) stay in whatever
+scripts or process you already use — flake-up only reports tip drift.
 
 ## Develop
 
@@ -49,19 +57,21 @@ nix develop
 go run .
 ```
 
-`nix build` / `nix run`. After Go changes for PATH via HM: `nh home switch ~/src/nix-config`.
+`nix build` / `nix run`.
 
 ## Layout
 
 | Path | Role |
 |------|------|
-| `main.go` | Entry |
+| `main.go` | Entry, help |
 | `ui.go` | Two-pane Bubble Tea UI |
-| `survey.go` | Lock check / metadata cache |
-| `update.go` | `nix flake update` + commit |
+| `survey.go` | Discovery, lock vs tip, metadata cache |
+| `vcs.go` | jj/git fetch + bookmark alignment |
 
 ## Agents
 
+Prefer the same out-of-band update:
+
 ```fish
-nix flake update --flake ~/src/CV
+nix flake update --flake ~/src/example
 ```
