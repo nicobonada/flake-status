@@ -60,15 +60,16 @@ func labelFor(path, root string) string {
 	return rel
 }
 
-// kind is the rollup status of a whole flake (left list mark).
+// kind is the rollup severity of a whole flake (left list mark).
+// Priority: red (stale/error) > amber (pin lag or VCS drift) > green.
 type kind string
 
 const (
 	kindPending kind = "pending" // survey still running
-	kindOK      kind = "ok"      // inputs ok (VCS drift is shown in the detail pane only)
-	kindStale   kind = "stale"   // at least one normal input behind/error
-	kindPin     kind = "pin"     // only pin-style inputs behind (e.g. determinate)
-	kindError   kind = "error"   // flake-level failure (unreadable lock, etc.)
+	kindOK      kind = "ok"      // green — no red or amber findings
+	kindStale   kind = "stale"   // red — normal input behind or input error
+	kindPin     kind = "pin"     // amber — pin lag and/or VCS drift only
+	kindError   kind = "error"   // red — flake-level failure (unreadable lock, etc.)
 )
 
 // inputState is the status of a single root flake input.
@@ -89,12 +90,19 @@ type inputStatus struct {
 	Detail string // short reason: "stale", "3.21.9 → 3.22.1", error text
 }
 
+// vcsLine is one bookmark row under the VCS summary.
+type vcsLine struct {
+	Name string // wip, main, origin
+	ID   string // short commit id
+	Desc string // first line of description
+}
+
 // vcsStatus summarizes wip / main / origin alignment for the repo.
 type vcsStatus struct {
 	// Summary is one line, e.g. "wip = main = origin" or "wip ≠ main = origin".
 	Summary string
-	// Lines are optional detail rows (bookmark · short id · description).
-	Lines []string
+	// Lines are optional detail rows (colored in the UI).
+	Lines []vcsLine
 	// Aligned is true when wip, main, and origin all match (after empty-wip rule).
 	Aligned bool
 	// Pending is true while fetch/check has not finished (unused when set on final result).
@@ -228,11 +236,11 @@ func surveyStream(paths []string, root string, cache *metaCache) <-chan flakeSta
 
 			st.vcs = vcs
 			if inErr != nil {
-				st.kind = kindError
 				st.flakeErr = inErr.Error()
+				st.kind = kindError
 			} else {
 				st.inputs = inputs
-				st.kind = rollupKind(inputs)
+				st.kind = rollupKind(inputs, vcs)
 			}
 			ch <- st
 		}(p)
@@ -244,27 +252,43 @@ func surveyStream(paths []string, root string, cache *metaCache) <-chan flakeSta
 	return ch
 }
 
-func rollupKind(inputs []inputStatus) kind {
-	var hasNormalProb, hasPinProb bool
+// rollupKind maps right-pane findings to a left-list severity:
+// any red → stale/error family; else any amber → pin; else ok.
+func rollupKind(inputs []inputStatus, vcs vcsStatus) kind {
+	hasRed, hasAmber := false, false
 	for _, in := range inputs {
 		switch in.State {
-		case inputError, inputStale:
-			if in.Pin {
-				hasPinProb = true
-			} else {
-				hasNormalProb = true
-			}
+		case inputStale, inputError:
+			hasRed = true
 		case inputPin:
-			hasPinProb = true
+			hasAmber = true
 		}
 	}
-	if hasNormalProb {
+	// VCS: hard error is red; misalignment is amber.
+	if vcs.Err != "" {
+		hasRed = true
+	} else if vcsDriftAmber(vcs) {
+		hasAmber = true
+	}
+	if hasRed {
 		return kindStale
 	}
-	if hasPinProb {
+	if hasAmber {
 		return kindPin
 	}
 	return kindOK
+}
+
+func vcsDriftAmber(vcs vcsStatus) bool {
+	if vcs.Pending || vcs.Aligned {
+		return false
+	}
+	switch vcs.Summary {
+	case "", "(no vcs)":
+		return false
+	default:
+		return true
+	}
 }
 
 func checkFlakeInputs(flake string, cache *metaCache) ([]inputStatus, error) {

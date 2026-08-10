@@ -16,8 +16,8 @@ flake-up
 
 1. Discovers every `~/src/*` with `flake.nix` + `flake.lock`
 2. Opens the UI immediately; checks stream in (footer spinner + `checking n/N`)
-3. **Left:** flake list (`✓` / `✗` / `!` pin lag / `…` pending)
-4. **Right:** VCS strip + every root input with status
+3. **Left:** flake list — mark is the worst finding on the right (red > amber > green)
+4. **Right:** focused flake as the border title; path, VCS strip, every root input
 
 ### Keys
 
@@ -30,14 +30,16 @@ flake-up
 
 ### Marks
 
-| Glyph | Meaning |
-|-------|---------|
-| `✓` | Input at tip / flake ok |
-| `✗` | Input (or flake) behind tip or error |
-| `!` | Pin-style input behind tip (e.g. Determinate) — amber |
-| `…` | Still checking |
+| Glyph | Color | Meaning |
+|-------|--------|---------|
+| `✓` | green | Ok |
+| `!` | amber | Pin lag (e.g. Determinate) and/or VCS drift |
+| `✗` | red | Stale input or error |
+| `…` | muted | Still checking |
 
-VCS line compares `wip`, `main`, and `main@origin` when using [Jujutsu](https://jj-vcs.github.io/jj/); git repos show `main` vs `origin/main`. An empty parked `wip` on `main` counts as aligned. Remotes are fetched with limited concurrency.
+Left-list rollup: any red finding on the right → red; else any amber → amber; else green.
+
+VCS compares `wip`, `main`, and `main@origin` when using [Jujutsu](https://jj-vcs.github.io/jj/); git repos show `main` vs `origin/main`. An empty parked `wip` on `main` counts as aligned. Remotes are fetched with limited concurrency.
 
 ### Updating locks (outside this tool)
 

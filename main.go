@@ -68,8 +68,8 @@ const helpText = `flake-up — two-pane survey of flakes under ~/src.
 
 Read-only status dashboard (does not update locks).
 
-Left:  flake list (✓ ok · ✗ stale · ! pin lag · … checking)
-Right: VCS alignment (wip / main / origin) and every root input
+Left:  flake list — severity from the worst finding on the right
+Right: focused flake (border title) — path, VCS, every root input
 
 Keys:
   j/k or arrows   move
@@ -77,10 +77,11 @@ Keys:
   pgup/pgdn       scroll detail
   q / ctrl+c      quit
 
-Input marks:
-  ✓  at tip
-  ✗  behind tip (or error)
-  !  pin-style input behind tip (e.g. determinate)
+Severity (left list and input rows):
+  ✓  green  — ok
+  !  amber  — pin lag and/or VCS drift (wip/main/origin)
+  ✗  red    — stale input or error
+  …  pending
 
 VCS uses local tools (jj preferred, else git) and fetches remotes with
 limited concurrency. Empty parked wip on main counts as aligned with main.

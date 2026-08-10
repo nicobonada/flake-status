@@ -100,20 +100,20 @@ func checkVCSJJ(repo string) vcsStatus {
 
 	aligned := hasMain && hasOrigin && eq(main, origin) && (!hasWip || eq(wip, main))
 
-	var lines []string
+	var lines []vcsLine
 	if !aligned {
 		if hasWip && (!hasMain || !eq(wip, main)) {
-			lines = append(lines, formatVCSLine("wip", wipID, wipDesc))
+			lines = append(lines, makeVCSLine("wip", wipID, wipDesc))
 		}
 		if hasMain {
-			lines = append(lines, formatVCSLine("main", mainID, mainDesc))
+			lines = append(lines, makeVCSLine("main", mainID, mainDesc))
 		}
 		if hasOrigin && (!hasMain || !eq(main, origin)) {
-			lines = append(lines, formatVCSLine("origin", originID, originDesc))
+			lines = append(lines, makeVCSLine("origin", originID, originDesc))
 		}
 	} else if hasMain {
 		// One quiet line when fully aligned.
-		lines = append(lines, formatVCSLine("main", mainID, mainDesc))
+		lines = append(lines, makeVCSLine("main", mainID, mainDesc))
 	}
 
 	return vcsStatus{
@@ -123,15 +123,14 @@ func checkVCSJJ(repo string) vcsStatus {
 	}
 }
 
-func formatVCSLine(name, id, desc string) string {
-	id = shortHash(id)
+func makeVCSLine(name, id, desc string) vcsLine {
 	desc = strings.TrimSpace(desc)
-	if desc == "" {
-		return fmt.Sprintf("%-6s %s", name, id)
-	}
-	// Keep description on one line, truncated later by the viewport if needed.
 	desc = strings.ReplaceAll(desc, "\n", " ")
-	return fmt.Sprintf("%-6s %s  %s", name, id, desc)
+	return vcsLine{
+		Name: name,
+		ID:   shortHash(id),
+		Desc: desc,
+	}
 }
 
 func jjBookmark(repo, name string) (id, desc string, err error) {
@@ -193,7 +192,7 @@ func checkVCSGit(repo string) vcsStatus {
 	if errOrigin != nil {
 		return vcsStatus{
 			Summary: "main (no origin)",
-			Lines:   []string{formatVCSLine("main", mainID, mainDesc)},
+			Lines:   []vcsLine{makeVCSLine("main", mainID, mainDesc)},
 			Aligned: false,
 		}
 	}
@@ -201,15 +200,15 @@ func checkVCSGit(repo string) vcsStatus {
 	if mainID == originID {
 		return vcsStatus{
 			Summary: "main = origin",
-			Lines:   []string{formatVCSLine("main", mainID, mainDesc)},
+			Lines:   []vcsLine{makeVCSLine("main", mainID, mainDesc)},
 			Aligned: true,
 		}
 	}
 	return vcsStatus{
 		Summary: "main ≠ origin",
-		Lines: []string{
-			formatVCSLine("main", mainID, mainDesc),
-			formatVCSLine("origin", originID, originDesc),
+		Lines: []vcsLine{
+			makeVCSLine("main", mainID, mainDesc),
+			makeVCSLine("origin", originID, originDesc),
 		},
 		Aligned: false,
 	}

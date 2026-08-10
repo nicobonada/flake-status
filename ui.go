@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
@@ -16,14 +17,33 @@ import (
 // Read-only — updates are done outside this tool.
 
 var (
-	styleTitle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
-	styleHelp   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	styleOK     = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	styleStale  = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	stylePin    = lipgloss.NewStyle().Foreground(lipgloss.Color("3")) // amber
-	styleErr    = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-	styleMuted  = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	styleBorder = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("8"))
+	// Palette tuned for dark terminals: body text stays readable; accents stay loud.
+	// Avoid ANSI 8 (often equal to the background in dark themes).
+	colAccent  = lipgloss.Color("12")  // cyan/blue — focus, section labels
+	colOK      = lipgloss.Color("10")  // bright green
+	colStale   = lipgloss.Color("9")   // bright red
+	colAmber   = lipgloss.Color("214") // orange/amber
+	colHash    = lipgloss.Color("13")  // magenta — short ids
+	colName    = lipgloss.Color("14")  // cyan — bookmark / field names
+	colMuted   = lipgloss.Color("245") // secondary body (path, VCS desc, help)
+	colBorder  = lipgloss.Color("240") // unfocused border (dimmer than body text)
+	colBorderF = lipgloss.Color("12")  // focused pane border
+	colText    = lipgloss.Color("15")  // selected row
+	colBody    = lipgloss.Color("252") // unselected list labels
+	colTitleOff = lipgloss.Color("248")
+
+	styleHelp     = lipgloss.NewStyle().Foreground(colMuted)
+	styleOK       = lipgloss.NewStyle().Foreground(colOK)
+	styleStale    = lipgloss.NewStyle().Foreground(colStale)
+	styleAmber    = lipgloss.NewStyle().Foreground(colAmber)
+	styleErr      = lipgloss.NewStyle().Foreground(colStale)
+	styleMuted    = lipgloss.NewStyle().Foreground(colMuted)
+	styleSection  = lipgloss.NewStyle().Bold(true).Foreground(colAccent)
+	stylePath     = lipgloss.NewStyle().Foreground(colMuted)
+	styleBook     = lipgloss.NewStyle().Foreground(colName)
+	styleHash     = lipgloss.NewStyle().Foreground(colHash)
+	styleTitleOn  = lipgloss.NewStyle().Bold(true).Foreground(colAccent)
+	styleTitleOff = lipgloss.NewStyle().Bold(true).Foreground(colTitleOff)
 )
 
 // Messages from the background survey.
@@ -52,12 +72,10 @@ func statusMark(k kind) string {
 		return styleMuted.Render("…")
 	case kindOK:
 		return styleOK.Render("✓")
-	case kindStale:
+	case kindStale, kindError:
 		return styleStale.Render("✗")
 	case kindPin:
-		return stylePin.Render("!")
-	case kindError:
-		return styleErr.Render("!")
+		return styleAmber.Render("!")
 	default:
 		return styleMuted.Render("?")
 	}
@@ -68,12 +86,9 @@ func statusSummary(st flakeStatus) string {
 	case kindPending:
 		return "checking…"
 	case kindOK:
-		if !st.vcs.Aligned && st.vcs.Summary != "" && st.vcs.Summary != "(no vcs)" {
-			return "inputs ok · " + st.vcs.Summary
-		}
 		return "up to date"
 	case kindPin:
-		return pinSummary(st)
+		return amberSummary(st)
 	case kindStale:
 		return problemSummary(st)
 	default:
@@ -84,17 +99,20 @@ func statusSummary(st flakeStatus) string {
 	}
 }
 
-func pinSummary(st flakeStatus) string {
-	var names []string
+func amberSummary(st flakeStatus) string {
+	var parts []string
 	for _, in := range st.inputs {
 		if in.State == inputPin {
-			names = append(names, in.Name)
+			parts = append(parts, in.Name)
 		}
 	}
-	if len(names) == 0 {
-		return "pin lag"
+	if vcsDriftAmber(st.vcs) {
+		parts = append(parts, "vcs")
 	}
-	return strings.Join(names, ", ")
+	if len(parts) == 0 {
+		return "attention"
+	}
+	return strings.Join(parts, ", ")
 }
 
 func problemSummary(st flakeStatus) string {
@@ -105,24 +123,33 @@ func problemSummary(st flakeStatus) string {
 			names = append(names, in.Name)
 		}
 	}
+	if vcsDriftAmber(st.vcs) {
+		names = append(names, "vcs")
+	}
 	if len(names) == 0 {
+		if st.flakeErr != "" {
+			return st.flakeErr
+		}
 		return "stale"
 	}
 	return strings.Join(names, ", ")
 }
 
 type uiModel struct {
-	statuses []flakeStatus
-	list     list.Model
-	detail   viewport.Model
-	spinner  spinner.Model
-	surveyCh <-chan flakeStatus
-	checking bool
-	checked  int
-	total    int
-	width    int
-	height   int
-	ready    bool
+	statuses  []flakeStatus
+	list      list.Model
+	detail    viewport.Model
+	spinner   spinner.Model
+	surveyCh  <-chan flakeStatus
+	checking  bool
+	checked   int
+	total     int
+	width     int
+	height    int
+	ready     bool
+	leftBoxW  int
+	rightBoxW int
+	boxH      int
 }
 
 func newUI(statuses []flakeStatus, surveyCh <-chan flakeStatus) uiModel {
@@ -135,9 +162,19 @@ func newUI(statuses []flakeStatus, surveyCh <-chan flakeStatus) uiModel {
 	delegate.ShowDescription = false
 	delegate.SetHeight(1)
 	delegate.SetSpacing(0)
-	delegate.Styles.SelectedTitle = delegate.Styles.SelectedTitle.
-		Foreground(lipgloss.Color("15")).
-		BorderForeground(lipgloss.Color("12"))
+	// Selected row: bright text + cyan left bar (lazyjj-ish focus).
+	delegate.Styles.SelectedTitle = lipgloss.NewStyle().
+		Foreground(colText).
+		Bold(true).
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(colAccent).
+		PaddingLeft(1)
+	delegate.Styles.NormalTitle = lipgloss.NewStyle().
+		Foreground(colBody).
+		PaddingLeft(1)
+	delegate.Styles.DimmedTitle = lipgloss.NewStyle().
+		Foreground(colMuted).
+		PaddingLeft(1)
 
 	l := list.New(items, delegate, 0, 0)
 	l.Title = ""
@@ -154,7 +191,7 @@ func newUI(statuses []flakeStatus, surveyCh <-chan flakeStatus) uiModel {
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
-	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
+	sp.Style = lipgloss.NewStyle().Foreground(colAccent)
 
 	vp := viewport.New(0, 0)
 	vp.SetContent("")
@@ -231,10 +268,10 @@ func (m *uiModel) refreshDetail() {
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s\n\n", styleMuted.Render(st.path))
+	fmt.Fprintf(&b, "%s\n\n", stylePath.Render(st.path))
 
 	// VCS block
-	fmt.Fprintf(&b, "%s  ", styleTitle.Render("VCS"))
+	fmt.Fprintf(&b, "%s  ", styleSection.Render("VCS"))
 	switch {
 	case st.kind == kindPending && st.vcs.Pending:
 		fmt.Fprintf(&b, "%s %s\n", m.spinner.View(), styleMuted.Render("fetching…"))
@@ -244,17 +281,19 @@ func (m *uiModel) refreshDetail() {
 		sumStyle := styleMuted
 		if st.vcs.Aligned {
 			sumStyle = styleOK
-		} else if st.vcs.Summary != "(no vcs)" {
-			sumStyle = stylePin
+		} else if vcsDriftAmber(st.vcs) {
+			sumStyle = styleAmber
+		} else if st.vcs.Err != "" {
+			sumStyle = styleErr
 		}
 		fmt.Fprintf(&b, "%s\n", sumStyle.Render(st.vcs.Summary))
 		for _, line := range st.vcs.Lines {
-			fmt.Fprintf(&b, "     %s\n", styleMuted.Render(line))
+			fmt.Fprintf(&b, "     %s\n", renderVCSLine(line))
 		}
 	}
 
 	fmt.Fprintln(&b)
-	fmt.Fprintf(&b, "%s\n", styleTitle.Render("Inputs"))
+	fmt.Fprintf(&b, "%s\n", styleSection.Render("Inputs"))
 
 	switch {
 	case st.kind == kindPending:
@@ -264,11 +303,10 @@ func (m *uiModel) refreshDetail() {
 	case len(st.inputs) == 0:
 		fmt.Fprintf(&b, "  %s\n", styleMuted.Render("(no direct inputs)"))
 	default:
-		// Align names for a clean column.
 		nameWidth := 0
 		for _, in := range st.inputs {
-			if len(in.Name) > nameWidth {
-				nameWidth = len(in.Name)
+			if n := utf8.RuneCountInString(in.Name); n > nameWidth {
+				nameWidth = n
 			}
 		}
 		if nameWidth > 28 {
@@ -277,10 +315,11 @@ func (m *uiModel) refreshDetail() {
 		for _, in := range st.inputs {
 			glyph, gStyle := inputGlyph(in)
 			name := in.Name
-			if len(name) > nameWidth {
-				name = name[:nameWidth-1] + "…"
+			runes := []rune(name)
+			if len(runes) > nameWidth {
+				name = string(runes[:nameWidth-1]) + "…"
 			}
-			pad := strings.Repeat(" ", nameWidth-len(name))
+			pad := strings.Repeat(" ", nameWidth-utf8.RuneCountInString(name))
 			line := fmt.Sprintf("  %s  %s%s", gStyle.Render(glyph), name, pad)
 			if in.Detail != "" {
 				dStyle := styleMuted
@@ -288,7 +327,7 @@ func (m *uiModel) refreshDetail() {
 				case inputStale:
 					dStyle = styleStale
 				case inputPin:
-					dStyle = stylePin
+					dStyle = styleAmber
 				case inputError:
 					dStyle = styleErr
 				}
@@ -302,6 +341,15 @@ func (m *uiModel) refreshDetail() {
 	m.detail.GotoTop()
 }
 
+func renderVCSLine(line vcsLine) string {
+	name := fmt.Sprintf("%-6s", line.Name)
+	parts := []string{styleBook.Render(name), styleHash.Render(line.ID)}
+	if line.Desc != "" {
+		parts = append(parts, styleMuted.Render(line.Desc))
+	}
+	return strings.Join(parts, "  ")
+}
+
 func inputGlyph(in inputStatus) (string, lipgloss.Style) {
 	switch in.State {
 	case inputOK:
@@ -309,12 +357,116 @@ func inputGlyph(in inputStatus) (string, lipgloss.Style) {
 	case inputStale:
 		return "✗", styleStale
 	case inputPin:
-		return "!", stylePin
+		return "!", styleAmber
 	case inputError:
-		return "!", styleErr
+		return "✗", styleErr
 	default:
 		return "?", styleMuted
 	}
+}
+
+// titledBox draws a rounded box with the title embedded in the top border:
+//
+//	╭─ Title ─────────╮
+//	│ content         │
+//	╰─────────────────╯
+func titledBox(title, content string, width, height int, focused bool) string {
+	if width < 4 {
+		width = 4
+	}
+	if height < 2 {
+		height = 2
+	}
+
+	borderCol := colBorder
+	titleStyle := styleTitleOff
+	if focused {
+		borderCol = colBorderF
+		titleStyle = styleTitleOn
+	}
+	bStyle := lipgloss.NewStyle().Foreground(borderCol)
+
+	// Top border with title: ╭─ Title ──…─╮
+	const (
+		tl = "╭"
+		tr = "╮"
+		bl = "╰"
+		br = "╯"
+		h  = "─"
+		v  = "│"
+	)
+	innerW := width - 2 // between vertical borders
+	title = strings.TrimSpace(title)
+	// "─ Title ─" fragment; pad with ─ to fill innerW
+	titleFrag := ""
+	if title != "" {
+		titleFrag = " " + title + " "
+	}
+	titleVis := utf8.RuneCountInString(titleFrag)
+	// left "─" after ╭, then title, then fill, before ╮
+	// layout: ╭ + ─ + titleFrag + ─* + ╮  but title is colored separately
+	leftDashes := 1
+	remain := innerW - leftDashes - titleVis
+	if remain < 1 {
+		// Truncate title to fit.
+		maxTitle := innerW - leftDashes - 1
+		if maxTitle < 1 {
+			maxTitle = 1
+		}
+		r := []rune(title)
+		if len(r) > maxTitle {
+			title = string(r[:maxTitle])
+		}
+		titleFrag = " " + title + " "
+		titleVis = utf8.RuneCountInString(titleFrag)
+		remain = innerW - leftDashes - titleVis
+		if remain < 0 {
+			remain = 0
+		}
+	}
+	top := bStyle.Render(tl+strings.Repeat(h, leftDashes)) +
+		titleStyle.Render(titleFrag) +
+		bStyle.Render(strings.Repeat(h, remain)+tr)
+
+	// Content area: height-2 rows of │ content │
+	bodyH := height - 2
+	if bodyH < 1 {
+		bodyH = 1
+	}
+	// Pad/truncate content lines to bodyH and innerW.
+	rawLines := strings.Split(content, "\n")
+	lines := make([]string, bodyH)
+	for i := 0; i < bodyH; i++ {
+		var line string
+		if i < len(rawLines) {
+			line = rawLines[i]
+		}
+		lines[i] = padVisual(line, innerW)
+	}
+	var body strings.Builder
+	for _, line := range lines {
+		body.WriteString(bStyle.Render(v))
+		body.WriteString(line)
+		body.WriteString(bStyle.Render(v))
+		body.WriteByte('\n')
+	}
+
+	bottom := bStyle.Render(bl + strings.Repeat(h, innerW) + br)
+	return top + "\n" + body.String() + bottom
+}
+
+// padVisual pads or truncates s to width display cells (ANSI-aware via lipgloss).
+func padVisual(s string, width int) string {
+	w := lipgloss.Width(s)
+	if w == width {
+		return s
+	}
+	if w < width {
+		return s + strings.Repeat(" ", width-w)
+	}
+	// Truncate carefully: walk runes with lipgloss width.
+	// Simple path: use lipgloss.NewStyle().Width(width).MaxWidth(width).Render
+	return lipgloss.NewStyle().Width(width).MaxHeight(1).Render(s)
 }
 
 func (m uiModel) Init() tea.Cmd {
@@ -392,7 +544,7 @@ func (m uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *uiModel) layout() {
-	chrome := 3
+	chrome := 2 // footer only; titles live in borders
 	innerH := m.height - chrome
 	if innerH < 5 {
 		innerH = 5
@@ -404,15 +556,19 @@ func (m *uiModel) layout() {
 	if leftW > 48 {
 		leftW = 48
 	}
-	rightW := m.width - leftW - 2
-	if rightW < 20 {
-		rightW = 20
-		leftW = m.width - rightW - 2
+	rightW := m.width - leftW
+	if rightW < 24 {
+		rightW = 24
+		leftW = m.width - rightW
 	}
 
+	// Inner content size accounts for border (1 col/row each side).
 	m.list.SetSize(leftW-2, innerH-2)
 	m.detail.Width = rightW - 2
 	m.detail.Height = innerH - 2
+	m.leftBoxW = leftW
+	m.rightBoxW = rightW
+	m.boxH = innerH
 }
 
 func (m uiModel) View() string {
@@ -420,18 +576,15 @@ func (m uiModel) View() string {
 		return "…"
 	}
 
-	leftTitle := styleTitle.Render(" Flakes ")
-	rightTitle := styleTitle.Render(" Inputs ")
-	st := m.focusedStatus()
-	if st != nil {
-		rightTitle = styleTitle.Render(" Inputs · "+st.label+" ")
+	// Right border title is the focused flake name (not "Inputs").
+	rightTitle := "·"
+	if st := m.focusedStatus(); st != nil {
+		rightTitle = st.label
 	}
 
-	left := styleBorder.Width(m.list.Width() + 2).Height(m.list.Height() + 2).Render(
-		lipgloss.JoinVertical(lipgloss.Left, leftTitle, m.list.View()),
-	)
-	rightInner := lipgloss.JoinVertical(lipgloss.Left, rightTitle, m.detail.View())
-	right := styleBorder.Width(m.detail.Width + 2).Height(m.detail.Height + 2).Render(rightInner)
+	// List is focused for navigation; give it the accent border.
+	left := titledBox("Flakes", m.list.View(), m.leftBoxW, m.boxH, true)
+	right := titledBox(rightTitle, m.detail.View(), m.rightBoxW, m.boxH, false)
 
 	body := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 	help := styleHelp.Render("j/k move · / filter · pgup/pgdn detail · q quit")
@@ -441,19 +594,17 @@ func (m uiModel) View() string {
 		status = styleMuted.Render(fmt.Sprintf("%s checking %d/%d", m.spinner.View(), m.checked, m.total))
 	} else {
 		n := m.attentionCount()
-		if n == 0 {
+		switch {
+		case n == 0:
 			status = styleOK.Render("all clear")
-		} else if n == 1 {
-			status = styleMuted.Render("1 needs attention")
-		} else {
-			status = styleMuted.Render(fmt.Sprintf("%d need attention", n))
+		case n == 1:
+			status = styleAmber.Render("1 needs attention")
+		default:
+			status = styleAmber.Render(fmt.Sprintf("%d need attention", n))
 		}
 	}
-	footer := lipgloss.JoinHorizontal(lipgloss.Top,
-		help,
-		strings.Repeat(" ", max(1, m.width-lipgloss.Width(help)-lipgloss.Width(status)-1)),
-		status,
-	)
+	gap := max(1, m.width-lipgloss.Width(help)-lipgloss.Width(status)-1)
+	footer := lipgloss.JoinHorizontal(lipgloss.Top, help, strings.Repeat(" ", gap), status)
 
 	return lipgloss.JoinVertical(lipgloss.Left, body, footer)
 }
