@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Preflight for flake-status: build the default package. No install.
+# Optional closure hint (not a gate): ~/src/grok/scripts/nvd-if-changed
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+log() { printf 'preflight: %s\n' "$*"; }
+
+log "repo=$ROOT"
+
+log "build .#default"
+built="$(nix build --no-link --print-out-paths '.#default')"
+log "built=$built"
+
+log "OK (built default; no install)"
