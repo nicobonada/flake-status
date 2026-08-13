@@ -29,15 +29,21 @@
               license = pkgs.lib.licenses.mit;
             };
           };
+          # Do not wrap nixpkgs nix: on Determinate hosts that binary is first
+          # on PATH, disagrees with daemon settings (eval-cores, lazy-trees),
+          # and made cold `nix flake metadata` look hung. Use the host nix.
           wrapped = pkgs.writeShellApplication {
             name = "flake-status";
             runtimeInputs = with pkgs; [
               flake-status
-              nix
               jujutsu
               git
             ];
             text = ''
+              if ! command -v nix >/dev/null; then
+                echo "flake-status: nix not on PATH" >&2
+                exit 1
+              fi
               exec ${pkgs.lib.getExe flake-status} "$@"
             '';
           };

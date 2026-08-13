@@ -17,9 +17,11 @@ flake-status
 ```
 
 1. Discovers every `~/src/*` with `flake.nix` + `flake.lock`
-2. Opens the UI immediately; checks stream in (footer spinner + `checking n/N`)
+2. Opens the UI immediately; VCS and inputs stream in separately (footer `checking n/N`)
 3. **Left:** flake list — mark is the worst finding on the right (red > amber > green)
 4. **Right:** focused flake as the border title; path, VCS strip, every root input
+
+Shared flake refs (e.g. five copies of `nixpkgs`) share one `nix flake metadata` call — that is **singleflight**: the first caller starts the fetch, everyone else waits for that result. Each metadata / remote-fetch has a timeout so a stall cannot leave the UI on spinners.
 
 ### Keys
 
@@ -71,7 +73,7 @@ go run .
 |------|------|
 | `main.go` | Entry, help |
 | `ui.go` | Two-pane Bubble Tea UI |
-| `survey.go` | Discovery, lock vs tip, metadata cache |
+| `survey.go` | Discovery, lock vs tip, singleflight metadata cache |
 | `vcs.go` | jj/git fetch + bookmark alignment |
 
 ## Agents

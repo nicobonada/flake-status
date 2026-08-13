@@ -87,7 +87,10 @@ Exact pins (flake ref version segment uses "=" / "%3D") are compared to a
 floating tip ("*") so amber means "an update exists", not "lock ≠ pin".
 
 VCS uses local tools (jj preferred, else git) and fetches remotes with
-limited concurrency. Empty parked wip on main counts as aligned with main.
+limited concurrency. VCS and inputs stream independently. Shared flake
+refs share one metadata fetch (singleflight). Each nix/git call has a
+timeout so a stall cannot freeze the UI. Empty parked wip on main counts
+as aligned with main.
 
 To update locks (out of band), for example:
 

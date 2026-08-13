@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // checkVCS fetches remotes (rate-limited) and compares wip / main / origin.
@@ -24,7 +26,7 @@ func checkVCS(repo string) vcsStatus {
 func checkVCSJJ(repo string) vcsStatus {
 	// Fetch first so main@origin reflects the remote (bounded concurrency).
 	vcsFetchSem <- struct{}{}
-	_ = runQuiet(repo, "jj", "git", "fetch")
+	_ = runQuiet(repo, vcsFetchTimeout, "jj", "git", "fetch")
 	<-vcsFetchSem
 
 	// Resolve commit ids for bookmarks we care about.
@@ -136,7 +138,7 @@ func makeVCSLine(name, id, desc string) vcsLine {
 func jjBookmark(repo, name string) (id, desc string, err error) {
 	// commit_id + tab + first line of description (tab is a real \t in the template).
 	tmpl := "commit_id ++ \"\t\" ++ description.first_line() ++ \"\n\""
-	out, err := runOut(repo, "jj", "log", "-r", name, "--no-graph", "-n", "1", "-T", tmpl)
+	out, err := runOut(repo, vcsCmdTimeout, "jj", "log", "-r", name, "--no-graph", "-n", "1", "-T", tmpl)
 	if err != nil {
 		return "", "", err
 	}
@@ -156,7 +158,7 @@ func jjBookmark(repo, name string) (id, desc string, err error) {
 // jjChangeMeta reports whether change is empty and its parent commit id (first parent).
 func jjChangeMeta(repo, commitID string) (empty bool, parent string) {
 	tmpl := "if(empty, \"1\", \"0\") ++ \"\t\" ++ parents.map(|c| c.commit_id()).join(\" \") ++ \"\n\""
-	out, err := runOut(repo, "jj", "log", "-r", commitID, "--no-graph", "-n", "1", "-T", tmpl)
+	out, err := runOut(repo, vcsCmdTimeout, "jj", "log", "-r", commitID, "--no-graph", "-n", "1", "-T", tmpl)
 	if err != nil {
 		return false, ""
 	}
@@ -172,7 +174,7 @@ func jjChangeMeta(repo, commitID string) (empty bool, parent string) {
 
 func checkVCSGit(repo string) vcsStatus {
 	vcsFetchSem <- struct{}{}
-	_ = runQuiet(repo, "git", "fetch", "--quiet")
+	_ = runQuiet(repo, vcsFetchTimeout, "git", "fetch", "--quiet")
 	<-vcsFetchSem
 
 	mainID, errMain := gitRev(repo, "main")
@@ -215,7 +217,7 @@ func checkVCSGit(repo string) vcsStatus {
 }
 
 func gitRev(repo, ref string) (string, error) {
-	out, err := runOut(repo, "git", "rev-parse", "--verify", ref)
+	out, err := runOut(repo, vcsCmdTimeout, "git", "rev-parse", "--verify", ref)
 	if err != nil {
 		return "", err
 	}
@@ -223,29 +225,30 @@ func gitRev(repo, ref string) (string, error) {
 }
 
 func gitSubject(repo, rev string) string {
-	out, err := runOut(repo, "git", "log", "-1", "--format=%s", rev)
+	out, err := runOut(repo, vcsCmdTimeout, "git", "log", "-1", "--format=%s", rev)
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(out)
 }
 
-func runQuiet(dir string, name string, args ...string) error {
-	cmd := exec.Command(name, args...)
-	cmd.Dir = dir
-	var stderr bytes.Buffer
-	cmd.Stdout = &bytes.Buffer{}
-	cmd.Stderr = &stderr
-	return cmd.Run()
+func runQuiet(dir string, timeout time.Duration, name string, args ...string) error {
+	_, err := runOut(dir, timeout, name, args...)
+	return err
 }
 
-func runOut(dir string, name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
+func runOut(dir string, timeout time.Duration, name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("timeout after %s", timeout)
+		}
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
 			msg = err.Error()

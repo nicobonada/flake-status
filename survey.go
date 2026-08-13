@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,6 +11,14 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
+)
+
+// Timeouts so a stalled nix/git call cannot leave the TUI on spinners forever.
+const (
+	metadataTimeout = 45 * time.Second
+	vcsFetchTimeout = 30 * time.Second
+	vcsCmdTimeout   = 15 * time.Second
 )
 
 func srcRoot() (string, error) {
@@ -112,13 +121,20 @@ type vcsStatus struct {
 }
 
 type flakeStatus struct {
-	path    string
-	label   string
-	kind    kind
-	inputs  []inputStatus
-	vcs     vcsStatus
-	// flakeErr is set when the whole flake could not be surveyed.
-	flakeErr string
+	path     string
+	label    string
+	kind     kind
+	inputs   []inputStatus
+	vcs      vcsStatus
+	flakeErr string // set when the lock/inputs survey failed
+
+	// Message flags: which fields this update carries (surveyStream sends
+	// VCS and inputs separately so the UI can paint the fast side first).
+	hasVCS    bool
+	hasInputs bool
+	// Accumulated: both true means the left-list mark can be finalized.
+	vcsDone    bool
+	inputsDone bool
 }
 
 // needsAttention is true when the flake should count toward the footer total.
@@ -187,8 +203,11 @@ func floatingTipRef(ref string) string {
 }
 
 type metaCache struct {
-	mu   sync.Mutex
-	data map[string]metaResult
+	mu       sync.Mutex
+	data     map[string]metaResult
+	inflight map[string]*metaCall
+	// fetch is nix flake metadata; injectable in tests.
+	fetch func(string) (map[string]any, error)
 }
 
 type metaResult struct {
@@ -196,24 +215,76 @@ type metaResult struct {
 	err  error
 }
 
-func newMetaCache() *metaCache {
-	return &metaCache{data: make(map[string]metaResult)}
+// metaCall is one in-flight fetch that waiters block on (singleflight).
+type metaCall struct {
+	done chan struct{}
+	res  metaResult
 }
 
+func newMetaCache() *metaCache {
+	return &metaCache{
+		data:     make(map[string]metaResult),
+		inflight: make(map[string]*metaCall),
+		fetch:    fetchMetadata,
+	}
+}
+
+// get returns metadata for url. Concurrent callers for the same url share one
+// in-flight fetch (singleflight): the first starts nix, the rest wait for that
+// result instead of launching a duplicate. Hits after that are a map lookup.
 func (c *metaCache) get(url string) (map[string]any, error) {
 	c.mu.Lock()
 	if hit, ok := c.data[url]; ok {
 		c.mu.Unlock()
 		return hit.meta, hit.err
 	}
+	if call, ok := c.inflight[url]; ok {
+		c.mu.Unlock()
+		<-call.done
+		return call.res.meta, call.res.err
+	}
+	call := &metaCall{done: make(chan struct{})}
+	c.inflight[url] = call
+	fetch := c.fetch
+	if fetch == nil {
+		fetch = fetchMetadata
+	}
 	c.mu.Unlock()
 
-	meta, err := fetchMetadata(url)
+	meta, err := fetch(url)
+	call.res = metaResult{meta: meta, err: err}
 
 	c.mu.Lock()
-	c.data[url] = metaResult{meta: meta, err: err}
+	c.data[url] = call.res
+	delete(c.inflight, url)
 	c.mu.Unlock()
+	close(call.done)
 	return meta, err
+}
+
+// mergeSurvey folds a partial update into the accumulated status. Left-list
+// severity stays pending until both VCS and inputs have arrived.
+func mergeSurvey(dst, src flakeStatus) flakeStatus {
+	out := dst
+	if src.hasVCS {
+		out.vcs = src.vcs
+		out.vcsDone = true
+	}
+	if src.hasInputs {
+		out.inputs = src.inputs
+		out.flakeErr = src.flakeErr
+		out.inputsDone = true
+	}
+	if out.inputsDone && out.vcsDone {
+		if out.flakeErr != "" {
+			out.kind = kindError
+		} else {
+			out.kind = rollupKind(out.inputs, out.vcs)
+		}
+	} else {
+		out.kind = kindPending
+	}
+	return out
 }
 
 // Global limit for jj/git fetch so we do not open dozens of network sessions at once.
@@ -233,10 +304,11 @@ func pendingStatuses(paths []string, root string) []flakeStatus {
 	return out
 }
 
-// surveyStream checks flakes concurrently and sends each result as it completes.
+// surveyStream checks flakes concurrently. VCS and inputs are sent as separate
+// updates so the UI can show fetch results while metadata is still running.
 // The channel is closed when all work is done.
 func surveyStream(paths []string, root string, cache *metaCache) <-chan flakeStatus {
-	ch := make(chan flakeStatus, len(paths))
+	ch := make(chan flakeStatus, len(paths)*2)
 	var wg sync.WaitGroup
 	workers := len(paths)
 	if workers > 8 {
@@ -252,35 +324,34 @@ func surveyStream(paths []string, root string, cache *metaCache) <-chan flakeSta
 			defer func() { <-sem }()
 
 			label := labelFor(path, root)
-			st := flakeStatus{path: path, label: label}
-
-			// VCS and input checks run in parallel for this flake.
-			var (
-				inputs []inputStatus
-				inErr  error
-				vcs    vcsStatus
-			)
 			var inner sync.WaitGroup
 			inner.Add(2)
 			go func() {
 				defer inner.Done()
-				inputs, inErr = checkFlakeInputs(path, cache)
+				ch <- flakeStatus{
+					path:   path,
+					label:  label,
+					kind:   kindPending,
+					vcs:    checkVCS(path),
+					hasVCS: true,
+				}
 			}()
 			go func() {
 				defer inner.Done()
-				vcs = checkVCS(path)
+				inputs, inErr := checkFlakeInputs(path, cache)
+				st := flakeStatus{
+					path:      path,
+					label:     label,
+					kind:      kindPending,
+					inputs:    inputs,
+					hasInputs: true,
+				}
+				if inErr != nil {
+					st.flakeErr = inErr.Error()
+				}
+				ch <- st
 			}()
 			inner.Wait()
-
-			st.vcs = vcs
-			if inErr != nil {
-				st.flakeErr = inErr.Error()
-				st.kind = kindError
-			} else {
-				st.inputs = inputs
-				st.kind = rollupKind(inputs, vcs)
-			}
-			ch <- st
 		}(p)
 	}
 	go func() {
@@ -617,11 +688,16 @@ func hasPrefixAny(s string, prefixes ...string) bool {
 }
 
 func fetchMetadata(url string) (map[string]any, error) {
-	cmd := exec.Command("nix", "flake", "metadata", url, "--json")
+	ctx, cancel := context.WithTimeout(context.Background(), metadataTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "nix", "flake", "metadata", url, "--json")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("timeout after %s", metadataTimeout)
+		}
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
 			msg = strings.TrimSpace(stdout.String())

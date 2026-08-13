@@ -19,17 +19,17 @@ import (
 var (
 	// Palette tuned for dark terminals: body text stays readable; accents stay loud.
 	// Avoid ANSI 8 (often equal to the background in dark themes).
-	colAccent  = lipgloss.Color("12")  // cyan/blue — focus, section labels
-	colOK      = lipgloss.Color("10")  // bright green
-	colStale   = lipgloss.Color("9")   // bright red
-	colAmber   = lipgloss.Color("214") // orange/amber
-	colHash    = lipgloss.Color("13")  // magenta — short ids
-	colName    = lipgloss.Color("14")  // cyan — bookmark / field names
-	colMuted   = lipgloss.Color("245") // secondary body (path, VCS desc, help)
-	colBorder  = lipgloss.Color("240") // unfocused border (dimmer than body text)
-	colBorderF = lipgloss.Color("12")  // focused pane border
-	colText    = lipgloss.Color("15")  // selected row
-	colBody    = lipgloss.Color("252") // unselected list labels
+	colAccent   = lipgloss.Color("12")  // cyan/blue — focus, section labels
+	colOK       = lipgloss.Color("10")  // bright green
+	colStale    = lipgloss.Color("9")   // bright red
+	colAmber    = lipgloss.Color("214") // orange/amber
+	colHash     = lipgloss.Color("13")  // magenta — short ids
+	colName     = lipgloss.Color("14")  // cyan — bookmark / field names
+	colMuted    = lipgloss.Color("245") // secondary body (path, VCS desc, help)
+	colBorder   = lipgloss.Color("240") // unfocused border (dimmer than body text)
+	colBorderF  = lipgloss.Color("12")  // focused pane border
+	colText     = lipgloss.Color("15")  // selected row
+	colBody     = lipgloss.Color("252") // unselected list labels
 	colTitleOff = lipgloss.Color("248")
 
 	styleHelp     = lipgloss.NewStyle().Foreground(colMuted)
@@ -234,15 +234,18 @@ func (m *uiModel) applySurveyResult(st flakeStatus) {
 		if !ok || it.st.path != st.path {
 			continue
 		}
-		it.st = st
+		wasDone := it.st.vcsDone && it.st.inputsDone
+		it.st = mergeSurvey(it.st, st)
 		items[i] = it
+		if !wasDone && it.st.vcsDone && it.st.inputsDone {
+			m.checked++
+		}
 		break
 	}
 	m.list.SetItems(items)
-	m.checked++
 	for i := range m.statuses {
 		if m.statuses[i].path == st.path {
-			m.statuses[i] = st
+			m.statuses[i] = mergeSurvey(m.statuses[i], st)
 			break
 		}
 	}
@@ -273,7 +276,7 @@ func (m *uiModel) refreshDetail() {
 	// VCS block
 	fmt.Fprintf(&b, "%s  ", styleSection.Render("VCS"))
 	switch {
-	case st.kind == kindPending && st.vcs.Pending:
+	case !st.vcsDone || st.vcs.Pending:
 		fmt.Fprintf(&b, "%s %s\n", m.spinner.View(), styleMuted.Render("fetching…"))
 	case st.vcs.Err != "" && st.vcs.Summary == "":
 		fmt.Fprintf(&b, "%s\n", styleErr.Render(st.vcs.Err))
@@ -296,7 +299,7 @@ func (m *uiModel) refreshDetail() {
 	fmt.Fprintf(&b, "%s\n", styleSection.Render("Inputs"))
 
 	switch {
-	case st.kind == kindPending:
+	case !st.inputsDone:
 		fmt.Fprintf(&b, "  %s %s\n", m.spinner.View(), styleMuted.Render("Checking inputs…"))
 	case st.flakeErr != "":
 		fmt.Fprintf(&b, "  %s\n", styleErr.Render(st.flakeErr))
