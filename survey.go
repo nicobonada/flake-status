@@ -70,14 +70,14 @@ func labelFor(path, root string) string {
 }
 
 // kind is the rollup severity of a whole flake (left list mark).
-// Priority: red (stale/error) > amber (pin lag or VCS drift) > green.
+// Priority: red (stale/error) > amber (VCS drift) > green.
 type kind string
 
 const (
 	kindPending kind = "pending" // survey still running
 	kindOK      kind = "ok"      // green — no red or amber findings
 	kindStale   kind = "stale"   // red — normal input behind or input error
-	kindPin     kind = "pin"     // amber — pin lag and/or VCS drift only
+	kindPin     kind = "pin"     // amber — VCS drift only
 	kindError   kind = "error"   // red — flake-level failure (unreadable lock, etc.)
 )
 
@@ -87,7 +87,6 @@ type inputState string
 const (
 	inputOK    inputState = "ok"
 	inputStale inputState = "stale"
-	inputPin   inputState = "pin" // pin-style and behind tip
 	inputError inputState = "error"
 )
 
@@ -95,9 +94,10 @@ const (
 type inputStatus struct {
 	Name   string
 	State  inputState
-	Pin    bool   // exact "=" version pin in the flake ref (see isExactVersionPin)
+	Pin    bool   // original flake ref is frozen to a SHA or "=" version
 	Detail string // error text, or plain behind-tip line when Have/Tip are unset
 	// Behind-tip labels for the detail pane (lock → tip). Dates are YYYY-MM-DD.
+	// On a pin that matches the lock, Have/HaveDay are the freeze; Tip is empty.
 	Have    string
 	Tip     string
 	HaveDay string
@@ -153,22 +153,105 @@ func (st flakeStatus) needsAttention() bool {
 	}
 }
 
-// isExactVersionPin reports whether the input uses an exact version pin via the
-// "=" operator in the flake ref (any host — commonly in versioned flake URLs).
-// Metadata of that ref always resolves to the pin itself, so tip checks must
-// query a floating rewrite (floatingTipRef) to see if a newer release exists.
-func isExactVersionPin(original map[string]any) bool {
+// isPinnedOriginal reports whether the flake *ref* is frozen (a git SHA or an
+// exact "=" version). Locked.rev does not count — every lock has one.
+func isPinnedOriginal(original map[string]any) bool {
 	if original == nil {
 		return false
 	}
-	if ref, err := flakeRef(original); err == nil && hasExactVersionOperator(ref) {
+	if r, ok := original["rev"].(string); ok && isGitSHA(r) {
 		return true
 	}
-	// flakeRef may fail for odd types; still inspect raw URL fields.
-	if u, ok := original["url"].(string); ok && hasExactVersionOperator(u) {
+	if r, ok := original["ref"].(string); ok && isGitSHA(r) {
+		return true
+	}
+	if ref, err := flakeRef(original); err == nil && refLooksPinned(ref) {
+		return true
+	}
+	if u, ok := original["url"].(string); ok && refLooksPinned(u) {
 		return true
 	}
 	return false
+}
+
+func refLooksPinned(ref string) bool {
+	return hasExactVersionOperator(ref) || shaFromRef(ref) != ""
+}
+
+func isGitSHA(s string) bool {
+	n := len(s)
+	if n < 7 || n > 40 {
+		return false
+	}
+	for i := 0; i < n; i++ {
+		c := s[i]
+		switch {
+		case c >= '0' && c <= '9', c >= 'a' && c <= 'f', c >= 'A' && c <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// shaFromRef returns a git SHA from ?rev= / &rev= or a path segment.
+func shaFromRef(ref string) string {
+	if ref == "" {
+		return ""
+	}
+	if _, query, ok := strings.Cut(ref, "?"); ok {
+		query, _, _ = strings.Cut(query, "#")
+		for _, kv := range strings.Split(query, "&") {
+			k, v, found := strings.Cut(kv, "=")
+			if found && k == "rev" && isGitSHA(v) {
+				return v
+			}
+		}
+	}
+	path := ref
+	if i := strings.IndexAny(path, "?#"); i >= 0 {
+		path = path[:i]
+	}
+	for _, seg := range strings.Split(path, "/") {
+		if isGitSHA(seg) {
+			return seg
+		}
+	}
+	return ""
+}
+
+// pinLabel is the short freeze shown next to "pin": version, or short SHA.
+func pinLabel(original, locked map[string]any) string {
+	if original != nil {
+		if u, ok := original["url"].(string); ok && u != "" {
+			if v := versionFromURL(u); v != "" {
+				return v
+			}
+			if sha := shaFromRef(u); sha != "" {
+				return shortHash(sha)
+			}
+		}
+		if r, ok := original["rev"].(string); ok && isGitSHA(r) {
+			return shortHash(r)
+		}
+		if r, ok := original["ref"].(string); ok && isGitSHA(r) {
+			return shortHash(r)
+		}
+		if ref, err := flakeRef(original); err == nil {
+			if v := versionFromURL(ref); v != "" {
+				return v
+			}
+			if sha := shaFromRef(ref); sha != "" {
+				return shortHash(sha)
+			}
+		}
+	}
+	if locked != nil {
+		if r, ok := locked["rev"].(string); ok && r != "" {
+			return shortHash(r)
+		}
+	}
+	return ""
 }
 
 // hasExactVersionOperator detects "=" / "%3D" exact-version segments in a ref.
@@ -186,26 +269,6 @@ func hasExactVersionOperator(ref string) bool {
 		}
 	}
 	return false
-}
-
-// floatingTipRef rewrites an exact "=" pin ref so metadata resolves to the
-// latest matching release (version segment → "*").
-func floatingTipRef(ref string) string {
-	parts := strings.Split(ref, "/")
-	for i := len(parts) - 1; i >= 0; i-- {
-		seg := parts[i]
-		base, query, hasQuery := strings.Cut(seg, "?")
-		lower := strings.ToLower(base)
-		if strings.HasPrefix(base, "=") || strings.HasPrefix(lower, "%3d") {
-			if hasQuery {
-				parts[i] = "*" + "?" + query
-			} else {
-				parts[i] = "*"
-			}
-			return strings.Join(parts, "/")
-		}
-	}
-	return ref
 }
 
 type metaCache struct {
@@ -368,15 +431,13 @@ func surveyStream(paths []string, root string, cache *metaCache) <-chan flakeSta
 }
 
 // rollupKind maps right-pane findings to a left-list severity:
-// any red → stale/error family; else any amber → pin; else ok.
+// any red → stale/error family; else VCS drift → amber; else ok.
 func rollupKind(inputs []inputStatus, vcs vcsStatus) kind {
 	hasRed, hasAmber := false, false
 	for _, in := range inputs {
 		switch in.State {
 		case inputStale, inputError:
 			hasRed = true
-		case inputPin:
-			hasAmber = true
 		}
 	}
 	// VCS: hard error is red; misalignment is amber.
@@ -455,7 +516,7 @@ func checkFlakeInputs(flake string, cache *metaCache) ([]inputStatus, error) {
 		jobs = append(jobs, job{
 			name: name,
 			node: node,
-			pin:  isExactVersionPin(peek.Original),
+			pin:  isPinnedOriginal(peek.Original),
 		})
 	}
 
@@ -524,12 +585,8 @@ func checkInputStatus(name string, nodeRaw json.RawMessage, pin bool, cache *met
 		base.Detail = err.Error()
 		return base
 	}
-	// Exact "=" pins always resolve to themselves; ask floating tip for "is there an update?".
-	metaURL := url
-	if pin {
-		metaURL = floatingTipRef(url)
-	}
-	meta, err := cache.get(metaURL)
+	// Pins resolve to themselves — do not rewrite to a floating tip.
+	meta, err := cache.get(url)
 	if err != nil {
 		base.State = inputError
 		base.Detail = err.Error()
@@ -555,22 +612,27 @@ func checkInputStatus(name string, nodeRaw json.RawMessage, pin bool, cache *met
 	}
 	if atTip {
 		base.State = inputOK
+		if pin {
+			applyPinDisplay(&base, node.Original, node.Locked)
+		}
 		return base
 	}
 
-	// Behind tip: exact pins → amber "!"; floating inputs → red "✗".
 	behind := parseBehindDetail(node.Locked, meta, haveV, tipV)
-	if pin {
-		base.State = inputPin
-	} else {
-		base.State = inputStale
-	}
+	base.State = inputStale
 	base.Have = behind.Have
 	base.Tip = behind.Tip
 	base.HaveDay = behind.HaveDay
 	base.TipDay = behind.TipDay
 	base.Detail = behind.String()
 	return base
+}
+
+func applyPinDisplay(st *inputStatus, original, locked map[string]any) {
+	st.Have = pinLabel(original, locked)
+	if sec, ok := lastModifiedUnix(locked); ok {
+		st.HaveDay = formatDay(sec)
+	}
 }
 
 // behindDetail is lock vs tip for one input: rev/version plus optional dates.

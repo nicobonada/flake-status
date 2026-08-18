@@ -79,12 +79,12 @@ Keys:
 
 Severity (left list and input rows):
   ✓  green  — ok
-  !  amber  — exact "=" version pin has a newer release, and/or VCS drift
+  !  amber  — VCS drift
   ✗  red    — floating input behind tip or error
   …  pending
 
-Exact pins (flake ref version segment uses "=" / "%3D") are compared to a
-floating tip ("*") so amber means "an update exists", not "lock ≠ pin".
+A flake ref frozen to a git SHA or exact "=" version shows a green row with
+a "pin" tag (the freeze is visible; it is not treated as behind tip).
 
 VCS uses local tools (jj preferred, else git) and fetches remotes with
 limited concurrency. VCS and inputs stream independently. Shared flake

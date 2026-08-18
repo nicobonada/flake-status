@@ -37,13 +37,13 @@ Shared flake refs (e.g. five copies of `nixpkgs`) share one `nix flake metadata`
 | Glyph | Color | Meaning |
 |-------|--------|---------|
 | `✓` | green | Ok |
-| `!` | amber | Exact `=` version pin has a newer release, and/or VCS drift |
+| `!` | amber | VCS drift |
 | `✗` | red | Floating input behind tip or error |
 | `…` | muted | Still checking |
 
 Left-list rollup: any red finding on the right → red; else any amber → amber; else green.
 
-**Exact pins:** if the flake ref pins a version with `=` (often URL-encoded as `%3D` in the path), metadata of that ref always resolves to the pin. flake-status compares the lock to a floating tip (`*` in place of the pin segment) and shows amber `!` when a newer release exists — host-agnostic, not tied to one vendor.
+A root input whose flake ref is frozen (git SHA in `rev`/`ref`/`?rev=`, or an exact `=` version) stays green and shows `pin  f13ff45a (2026-08-07)` so a held-back nixpkgs is visible. The lock is not compared to a rewritten floating tip.
 
 Behind-tip rows look like `f13ff45a (2026-08-07) -> ec2d622d (2026-08-17)`: the mark, rev, and arrow use the row accent; dates from `lastModified` are white.
 
@@ -56,8 +56,7 @@ nix flake update --flake ~/src/myflake
 nix flake update --flake ~/src/myflake nixpkgs home-manager
 ```
 
-How you bump an exact pin (and whether to allow prereleases) stays outside this
-tool — flake-status only reports that a newer floating tip exists.
+How you bump a frozen rev (and when to unpin) stays outside this tool.
 
 ## Develop
 

@@ -102,11 +102,6 @@ func statusSummary(st flakeStatus) string {
 
 func amberSummary(st flakeStatus) string {
 	var parts []string
-	for _, in := range st.inputs {
-		if in.State == inputPin {
-			parts = append(parts, in.Name)
-		}
-	}
 	if vcsDriftAmber(st.vcs) {
 		parts = append(parts, "vcs")
 	}
@@ -120,7 +115,7 @@ func problemSummary(st flakeStatus) string {
 	var names []string
 	for _, in := range st.inputs {
 		switch in.State {
-		case inputStale, inputError, inputPin:
+		case inputStale, inputError:
 			names = append(names, in.Name)
 		}
 	}
@@ -355,15 +350,23 @@ func renderVCSLine(line vcsLine, nameW int) string {
 }
 
 // renderInputDetail colors behind-tip rows: rev and arrow in the state
-// accent, dates in white. Errors stay a single accent string.
+// accent, dates in white. Pins that match the lock show a muted "pin" tag.
 func renderInputDetail(in inputStatus) string {
+	if in.Pin && in.Tip == "" && in.State == inputOK {
+		parts := []string{styleMuted.Render("pin")}
+		if in.Have != "" {
+			parts = append(parts, styleHash.Render(in.Have))
+			if in.HaveDay != "" {
+				parts = append(parts, styleDate.Render("("+in.HaveDay+")"))
+			}
+		}
+		return strings.Join(parts, "  ")
+	}
 	if in.Have != "" || in.Tip != "" {
 		accent := styleMuted
 		switch in.State {
 		case inputStale:
 			accent = styleStale
-		case inputPin:
-			accent = styleAmber
 		case inputError:
 			accent = styleErr
 		}
@@ -392,8 +395,6 @@ func renderInputDetail(in inputStatus) string {
 	switch in.State {
 	case inputStale:
 		dStyle = styleStale
-	case inputPin:
-		dStyle = styleAmber
 	case inputError:
 		dStyle = styleErr
 	}
@@ -406,8 +407,6 @@ func inputGlyph(in inputStatus) (string, lipgloss.Style) {
 		return "✓", styleOK
 	case inputStale:
 		return "✗", styleStale
-	case inputPin:
-		return "!", styleAmber
 	case inputError:
 		return "✗", styleErr
 	default:

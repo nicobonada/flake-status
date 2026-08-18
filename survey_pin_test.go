@@ -24,27 +24,60 @@ func TestHasExactVersionOperator(t *testing.T) {
 	}
 }
 
-func TestFloatingTipRef(t *testing.T) {
+func TestIsPinnedOriginal(t *testing.T) {
+	sha := "f13ff45afd1bb73e640eaa08a7066dbed07e3238"
 	cases := []struct {
-		in, want string
+		name string
+		orig map[string]any
+		want bool
 	}{
 		{
-			"https://flakehub.com/f/Org/proj/%3D3.21.9",
-			"https://flakehub.com/f/Org/proj/*",
+			name: "github rev",
+			orig: map[string]any{"type": "github", "owner": "NixOS", "repo": "nixpkgs", "rev": sha},
+			want: true,
 		},
 		{
-			"https://example.com/f/Org/proj/=1.2.3",
-			"https://example.com/f/Org/proj/*",
+			name: "github ref sha",
+			orig: map[string]any{"type": "github", "owner": "NixOS", "repo": "nixpkgs", "ref": sha},
+			want: true,
 		},
 		{
-			"https://example.com/f/Org/proj/*",
-			"https://example.com/f/Org/proj/*",
+			name: "github branch",
+			orig: map[string]any{"type": "github", "owner": "NixOS", "repo": "nixpkgs", "ref": "nixos-unstable"},
+			want: false,
+		},
+		{
+			name: "url query rev",
+			orig: map[string]any{"type": "git", "url": "https://example.com/nixpkgs.git?rev=" + sha},
+			want: true,
+		},
+		{
+			name: "flakehub exact version",
+			orig: map[string]any{"type": "tarball", "url": "https://flakehub.com/f/DeterminateSystems/determinate/%3D3.21.9"},
+			want: true,
+		},
+		{
+			name: "flakehub float",
+			orig: map[string]any{"type": "tarball", "url": "https://flakehub.com/f/DeterminateSystems/determinate/*"},
+			want: false,
 		},
 	}
 	for _, tc := range cases {
-		if got := floatingTipRef(tc.in); got != tc.want {
-			t.Errorf("floatingTipRef(%q)=%q want %q", tc.in, got, tc.want)
+		if got := isPinnedOriginal(tc.orig); got != tc.want {
+			t.Errorf("%s: isPinnedOriginal=%v want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+func TestPinLabel(t *testing.T) {
+	sha := "f13ff45afd1bb73e640eaa08a7066dbed07e3238"
+	got := pinLabel(map[string]any{"type": "github", "owner": "NixOS", "repo": "nixpkgs", "rev": sha}, nil)
+	if got != "f13ff45a" {
+		t.Fatalf("sha pinLabel=%q", got)
+	}
+	got = pinLabel(map[string]any{"type": "tarball", "url": "https://flakehub.com/f/Org/proj/%3D3.21.9"}, nil)
+	if got != "3.21.9" {
+		t.Fatalf("version pinLabel=%q", got)
 	}
 }
 
@@ -149,22 +182,5 @@ func TestLastModifiedUnix(t *testing.T) {
 	got, ok = lastModifiedUnix(map[string]any{"lastModified": json.Number("1712448000")})
 	if !ok || got != 1712448000 {
 		t.Fatalf("json.Number: %d %v", got, ok)
-	}
-}
-
-func TestIsExactVersionPinOriginal(t *testing.T) {
-	orig := map[string]any{
-		"type": "tarball",
-		"url":  "https://flakehub.com/f/DeterminateSystems/determinate/%3D3.21.9",
-	}
-	if !isExactVersionPin(orig) {
-		t.Fatal("expected exact pin")
-	}
-	float := map[string]any{
-		"type": "tarball",
-		"url":  "https://flakehub.com/f/DeterminateSystems/determinate/*",
-	}
-	if isExactVersionPin(float) {
-		t.Fatal("floating should not be exact pin")
 	}
 }
