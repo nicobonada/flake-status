@@ -56,7 +56,7 @@ func TestMergeSurveyPartialThenComplete(t *testing.T) {
 
 	afterVCS := mergeSurvey(base, flakeStatus{
 		hasVCS: true,
-		vcs:    vcsStatus{Summary: "wip = main = origin", Aligned: true},
+		vcs:    vcsStatus{Summary: "main = origin", Aligned: true},
 	})
 	if afterVCS.kind != kindPending {
 		t.Fatalf("after VCS only: kind=%s want pending", afterVCS.kind)
@@ -64,7 +64,7 @@ func TestMergeSurveyPartialThenComplete(t *testing.T) {
 	if !afterVCS.vcsDone || afterVCS.inputsDone {
 		t.Fatalf("after VCS: vcsDone=%v inputsDone=%v", afterVCS.vcsDone, afterVCS.inputsDone)
 	}
-	if afterVCS.vcs.Summary != "wip = main = origin" {
+	if afterVCS.vcs.Summary != "main = origin" {
 		t.Fatalf("VCS summary lost: %q", afterVCS.vcs.Summary)
 	}
 
@@ -91,7 +91,7 @@ func TestMergeSurveyInputsFirst(t *testing.T) {
 	}
 	done := mergeSurvey(afterIn, flakeStatus{
 		hasVCS: true,
-		vcs:    vcsStatus{Summary: "wip = main = origin", Aligned: true},
+		vcs:    vcsStatus{Summary: "main = origin", Aligned: true},
 	})
 	if done.kind != kindStale {
 		t.Fatalf("stale input should roll up red, got %s", done.kind)

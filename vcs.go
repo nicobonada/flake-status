@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
 
-// checkVCS fetches remotes (rate-limited) and compares wip / main / origin.
-// Prefer jj when .jj exists; otherwise git. No VCS → empty summary.
+// checkVCS fetches remotes (rate-limited) and compares unpublished work
+// against main / origin. Prefer jj when .jj exists; otherwise git.
+// No VCS → empty summary.
 func checkVCS(repo string) vcsStatus {
 	switch {
 	case dirExists(filepath.Join(repo, ".jj")):
@@ -29,93 +31,139 @@ func checkVCSJJ(repo string) vcsStatus {
 	_ = runQuiet(repo, vcsFetchTimeout, "jj", "git", "fetch")
 	<-vcsFetchSem
 
-	// Resolve commit ids for bookmarks we care about.
 	mainID, mainDesc, errMain := jjBookmark(repo, "main")
 	originID, originDesc, errOrigin := jjBookmark(repo, "main@origin")
-	wipID, wipDesc, errWip := jjBookmark(repo, "wip")
+	topics, errTopics := jjLocalBookmarks(repo)
+	wc, errWC := jjWorkingCopy(repo)
 
-	if errMain != nil && errOrigin != nil && errWip != nil {
+	if errMain != nil && errOrigin != nil && errTopics != nil && errWC != nil {
 		return vcsStatus{Summary: "vcs unavailable", Err: errMain.Error()}
 	}
 
-	// Empty parked wip: empty change whose parent is main → treat as aligned with main.
-	if errWip == nil && errMain == nil && wipID != mainID {
-		if empty, parent := jjChangeMeta(repo, wipID); empty && parent == mainID {
-			wipID = mainID
-			wipDesc = mainDesc
+	var main, origin *jjRef
+	if errMain == nil && mainID != "" {
+		main = &jjRef{name: "main", id: mainID, desc: mainDesc}
+	}
+	if errOrigin == nil && originID != "" {
+		origin = &jjRef{name: "origin", id: originID, desc: originDesc}
+	}
+	if errWC != nil {
+		wc = jjRef{}
+	}
+	return summarizeJJ(main, origin, topics, wc)
+}
+
+// jjRef is one bookmark or working-copy commit used in alignment.
+type jjRef struct {
+	name   string
+	id     string
+	desc   string
+	empty  bool
+	parent string
+}
+
+func isTrunkBookmark(name string) bool {
+	return name == "main" || name == "master"
+}
+
+// parkedEmptyOn is an empty change whose only parent is main — leftover
+// parked working copy or a just-created topic bookmark with no commits yet.
+func parkedEmptyOn(r jjRef, mainID string) bool {
+	return mainID != "" && r.empty && r.parent == mainID
+}
+
+// summarizeJJ compares unpublished work (named topic bookmarks and a dirty
+// working copy) against main and origin. Empty parked work on main is aligned.
+func summarizeJJ(main, origin *jjRef, topics []jjRef, wc jjRef) vcsStatus {
+	mainID := ""
+	if main != nil {
+		mainID = main.id
+	}
+
+	var diverging []jjRef
+	seen := map[string]bool{}
+	for _, t := range topics {
+		if t.name == "" || t.id == "" || isTrunkBookmark(t.name) {
+			continue
+		}
+		if t.id == mainID || parkedEmptyOn(t, mainID) {
+			continue
+		}
+		if seen[t.name] {
+			continue
+		}
+		seen[t.name] = true
+		diverging = append(diverging, t)
+	}
+	sort.Slice(diverging, func(i, j int) bool { return diverging[i].name < diverging[j].name })
+
+	// Dirty @ with no topic bookmark on it is unpublished work of its own.
+	// Empty @ is the parked working copy — topic bookmarks already cover
+	// recorded units underneath.
+	if wc.id != "" && !wc.empty {
+		covered := wc.id == mainID
+		for _, t := range topics {
+			if t.id == wc.id {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			diverging = append([]jjRef{{name: "@", id: wc.id, desc: wc.desc}}, diverging...)
 		}
 	}
 
-	hasWip := errWip == nil && wipID != ""
-	hasMain := errMain == nil && mainID != ""
-	hasOrigin := errOrigin == nil && originID != ""
-
-	// Build equality summary pieces present in this repo.
-	type ref struct {
-		name, id, desc string
-		ok             bool
-	}
-	wip := ref{"wip", wipID, wipDesc, hasWip}
-	main := ref{"main", mainID, mainDesc, hasMain}
-	origin := ref{"origin", originID, originDesc, hasOrigin}
-
-	eq := func(a, b ref) bool {
-		if !a.ok || !b.ok {
-			return false
-		}
-		return a.id == b.id
-	}
+	hasMain := main != nil && main.id != ""
+	hasOrigin := origin != nil && origin.id != ""
+	mainEqOrigin := hasMain && hasOrigin && main.id == origin.id
 
 	var summary string
 	switch {
-	case hasWip && hasMain && hasOrigin:
-		// wip ? main ? origin
-		wm := "="
-		if !eq(wip, main) {
-			wm = "≠"
+	case len(diverging) > 0 && hasMain && hasOrigin:
+		names := make([]string, len(diverging))
+		for i, t := range diverging {
+			names[i] = t.name
 		}
-		mo := "="
-		if !eq(main, origin) {
-			mo = "≠"
-		}
-		// Collapse wip = main = origin when all equal.
-		if wm == "=" && mo == "=" {
-			summary = "wip = main = origin"
-		} else if wm == "=" {
-			summary = "wip = main " + mo + " origin"
-		} else if mo == "=" {
-			summary = "wip " + wm + " main = origin"
+		work := strings.Join(names, ", ")
+		if mainEqOrigin {
+			summary = work + " ≠ main = origin"
 		} else {
-			summary = "wip ≠ main ≠ origin"
+			summary = work + " ≠ main ≠ origin"
 		}
 	case hasMain && hasOrigin:
-		if eq(main, origin) {
+		if mainEqOrigin {
 			summary = "main = origin"
 		} else {
 			summary = "main ≠ origin"
 		}
+	case len(diverging) > 0 && hasMain:
+		names := make([]string, len(diverging))
+		for i, t := range diverging {
+			names[i] = t.name
+		}
+		summary = strings.Join(names, ", ") + " ≠ main (no origin)"
 	case hasMain:
 		summary = "main (no origin)"
 	default:
 		summary = "vcs (incomplete bookmarks)"
 	}
 
-	aligned := hasMain && hasOrigin && eq(main, origin) && (!hasWip || eq(wip, main))
+	aligned := hasMain && hasOrigin && mainEqOrigin && len(diverging) == 0
 
 	var lines []vcsLine
 	if !aligned {
-		if hasWip && (!hasMain || !eq(wip, main)) {
-			lines = append(lines, makeVCSLine("wip", wipID, wipDesc))
+		for _, t := range diverging {
+			lines = append(lines, makeVCSLine(t.name, t.id, t.desc))
 		}
 		if hasMain {
-			lines = append(lines, makeVCSLine("main", mainID, mainDesc))
+			lines = append(lines, makeVCSLine("main", main.id, main.desc))
 		}
-		if hasOrigin && (!hasMain || !eq(main, origin)) {
-			lines = append(lines, makeVCSLine("origin", originID, originDesc))
+		if hasOrigin && !mainEqOrigin {
+			lines = append(lines, makeVCSLine("origin", origin.id, origin.desc))
 		}
 	} else if hasMain {
 		// One quiet line when fully aligned.
-		lines = append(lines, makeVCSLine("main", mainID, mainDesc))
+		lines = append(lines, makeVCSLine("main", main.id, main.desc))
 	}
 
 	return vcsStatus{
@@ -155,21 +203,84 @@ func jjBookmark(repo, name string) (id, desc string, err error) {
 	return id, desc, nil
 }
 
-// jjChangeMeta reports whether change is empty and its parent commit id (first parent).
-func jjChangeMeta(repo, commitID string) (empty bool, parent string) {
-	tmpl := "if(empty, \"1\", \"0\") ++ \"\t\" ++ parents.map(|c| c.commit_id()).join(\" \") ++ \"\n\""
-	out, err := runOut(repo, vcsCmdTimeout, "jj", "log", "-r", commitID, "--no-graph", "-n", "1", "-T", tmpl)
+// jjLocalBookmarks lists local bookmarks (not remotes). Trunk names are
+// included; summarizeJJ drops them.
+func jjLocalBookmarks(repo string) ([]jjRef, error) {
+	// name, remote, commit, empty, parents, description — tabs, one local bookmark per line.
+	tmpl := `name ++ "\t" ++ coalesce(remote, "") ++ "\t" ++ ` +
+		`if(normal_target, normal_target.commit_id(), "") ++ "\t" ++ ` +
+		`if(normal_target, if(normal_target.empty(), "1", "0"), "") ++ "\t" ++ ` +
+		`if(normal_target, normal_target.parents().map(|c| c.commit_id()).join(" "), "") ++ "\t" ++ ` +
+		`if(normal_target, normal_target.description().first_line(), "") ++ "\n"`
+	out, err := runOut(repo, vcsCmdTimeout, "jj", "bookmark", "list", "--sort", "name", "-T", tmpl)
 	if err != nil {
-		return false, ""
+		return nil, err
+	}
+	var refs []jjRef
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.SplitN(line, "\t", 6)
+		if len(fields) < 3 {
+			continue
+		}
+		name := strings.TrimSpace(fields[0])
+		remote := ""
+		if len(fields) > 1 {
+			remote = strings.TrimSpace(fields[1])
+		}
+		if name == "" || remote != "" {
+			continue
+		}
+		id := strings.TrimSpace(fields[2])
+		if id == "" {
+			continue
+		}
+		empty := len(fields) > 3 && fields[3] == "1"
+		parent := ""
+		if len(fields) > 4 {
+			if ps := strings.Fields(fields[4]); len(ps) > 0 {
+				parent = ps[0]
+			}
+		}
+		desc := ""
+		if len(fields) > 5 {
+			desc = strings.TrimSpace(fields[5])
+		}
+		refs = append(refs, jjRef{name: name, id: id, desc: desc, empty: empty, parent: parent})
+	}
+	return refs, nil
+}
+
+func jjWorkingCopy(repo string) (jjRef, error) {
+	tmpl := "commit_id ++ \"\t\" ++ if(empty, \"1\", \"0\") ++ \"\t\" ++ parents.map(|c| c.commit_id()).join(\" \") ++ \"\t\" ++ description.first_line() ++ \"\n\""
+	out, err := runOut(repo, vcsCmdTimeout, "jj", "log", "-r", "@", "--no-graph", "-n", "1", "-T", tmpl)
+	if err != nil {
+		return jjRef{}, err
 	}
 	line := strings.TrimSpace(out)
-	flag, rest, _ := strings.Cut(line, "\t")
-	empty = flag == "1"
-	fields := strings.Fields(rest)
-	if len(fields) > 0 {
-		parent = fields[0]
+	if line == "" {
+		return jjRef{}, fmt.Errorf("empty log for @")
 	}
-	return empty, parent
+	fields := strings.SplitN(line, "\t", 4)
+	if len(fields) < 1 || strings.TrimSpace(fields[0]) == "" {
+		return jjRef{}, fmt.Errorf("no commit for @")
+	}
+	r := jjRef{name: "@", id: strings.TrimSpace(fields[0])}
+	if len(fields) > 1 {
+		r.empty = fields[1] == "1"
+	}
+	if len(fields) > 2 {
+		if ps := strings.Fields(fields[2]); len(ps) > 0 {
+			r.parent = ps[0]
+		}
+	}
+	if len(fields) > 3 {
+		r.desc = strings.TrimSpace(fields[3])
+	}
+	return r, nil
 }
 
 func checkVCSGit(repo string) vcsStatus {

@@ -1,8 +1,8 @@
 # flake-status
 
 Two-pane **status dashboard** for flakes under `~/src`: which locks are behind,
-which exact version pins have a newer release, and whether `wip` / `main` / origin
-line up.
+which exact version pins have a newer release, and whether unpublished work
+lines up with `main` / origin.
 
 Working personal tool — steal ideas freely. **MIT** licensed.
 
@@ -45,7 +45,7 @@ Left-list rollup: any red finding on the right → red; else any amber → amber
 
 **Exact pins:** if the flake ref pins a version with `=` (often URL-encoded as `%3D` in the path), metadata of that ref always resolves to the pin. flake-status compares the lock to a floating tip (`*` in place of the pin segment) and shows amber `!` when a newer release exists — host-agnostic, not tied to one vendor.
 
-VCS compares `wip`, `main`, and `main@origin` when using [Jujutsu](https://jj-vcs.github.io/jj/); git repos show `main` vs `origin/main`. An empty parked `wip` on `main` counts as aligned. Remotes are fetched with limited concurrency.
+VCS compares named topic bookmarks and the working copy (`@`) against `main` and `main@origin` when using [Jujutsu](https://jj-vcs.github.io/jj/); git repos show `main` vs `origin/main`. An empty parked topic bookmark (or empty `@`) on `main` counts as aligned. Remotes are fetched with limited concurrency.
 
 ### Updating locks (outside this tool)
 

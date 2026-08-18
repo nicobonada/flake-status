@@ -101,18 +101,19 @@ type inputStatus struct {
 
 // vcsLine is one bookmark row under the VCS summary.
 type vcsLine struct {
-	Name string // wip, main, origin
+	Name string // topic name, @, main, origin
 	ID   string // short commit id
 	Desc string // first line of description
 }
 
-// vcsStatus summarizes wip / main / origin alignment for the repo.
+// vcsStatus summarizes unpublished work vs main / origin for the repo.
 type vcsStatus struct {
-	// Summary is one line, e.g. "wip = main = origin" or "wip ≠ main = origin".
+	// Summary is one line, e.g. "main = origin" or "niri-binds ≠ main = origin".
 	Summary string
 	// Lines are optional detail rows (colored in the UI).
 	Lines []vcsLine
-	// Aligned is true when wip, main, and origin all match (after empty-wip rule).
+	// Aligned is true when main matches origin and there is no diverging
+	// topic bookmark or dirty working copy (empty parked work on main is fine).
 	Aligned bool
 	// Pending is true while fetch/check has not finished (unused when set on final result).
 	Pending bool

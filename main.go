@@ -89,8 +89,9 @@ floating tip ("*") so amber means "an update exists", not "lock ≠ pin".
 VCS uses local tools (jj preferred, else git) and fetches remotes with
 limited concurrency. VCS and inputs stream independently. Shared flake
 refs share one metadata fetch (singleflight). Each nix/git call has a
-timeout so a stall cannot freeze the UI. Empty parked wip on main counts
-as aligned with main.
+timeout so a stall cannot freeze the UI. Named topic bookmarks and a
+dirty working copy (@) count as drift; an empty parked change on main
+counts as aligned.
 
 To update locks (out of band), for example:
 

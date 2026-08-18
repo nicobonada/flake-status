@@ -290,8 +290,14 @@ func (m *uiModel) refreshDetail() {
 			sumStyle = styleErr
 		}
 		fmt.Fprintf(&b, "%s\n", sumStyle.Render(st.vcs.Summary))
+		nameW := 6
 		for _, line := range st.vcs.Lines {
-			fmt.Fprintf(&b, "     %s\n", renderVCSLine(line))
+			if n := utf8.RuneCountInString(line.Name); n > nameW {
+				nameW = n
+			}
+		}
+		for _, line := range st.vcs.Lines {
+			fmt.Fprintf(&b, "     %s\n", renderVCSLine(line, nameW))
 		}
 	}
 
@@ -344,8 +350,11 @@ func (m *uiModel) refreshDetail() {
 	m.detail.GotoTop()
 }
 
-func renderVCSLine(line vcsLine) string {
-	name := fmt.Sprintf("%-6s", line.Name)
+func renderVCSLine(line vcsLine, nameW int) string {
+	if nameW < 6 {
+		nameW = 6
+	}
+	name := fmt.Sprintf("%-*s", nameW, line.Name)
 	parts := []string{styleBook.Render(name), styleHash.Render(line.ID)}
 	if line.Desc != "" {
 		parts = append(parts, styleMuted.Render(line.Desc))
