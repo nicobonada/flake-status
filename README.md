@@ -45,6 +45,8 @@ Left-list rollup: any red finding on the right → red; else any amber → amber
 
 **Exact pins:** if the flake ref pins a version with `=` (often URL-encoded as `%3D` in the path), metadata of that ref always resolves to the pin. flake-status compares the lock to a floating tip (`*` in place of the pin segment) and shows amber `!` when a newer release exists — host-agnostic, not tied to one vendor.
 
+Behind-tip rows look like `f13ff45a (2026-08-07) -> ec2d622d (2026-08-17)`: the mark, rev, and arrow use the row accent; dates from `lastModified` are white.
+
 VCS compares named topic bookmarks and the working copy (`@`) against `main` and `main@origin` when using [Jujutsu](https://jj-vcs.github.io/jj/); git repos show `main` vs `origin/main`. An empty parked topic bookmark (or empty `@`) on `main` counts as aligned. Remotes are fetched with limited concurrency.
 
 ### Updating locks (outside this tool)

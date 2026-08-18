@@ -44,6 +44,7 @@ var (
 	styleHash     = lipgloss.NewStyle().Foreground(colHash)
 	styleTitleOn  = lipgloss.NewStyle().Bold(true).Foreground(colAccent)
 	styleTitleOff = lipgloss.NewStyle().Bold(true).Foreground(colTitleOff)
+	styleDate     = lipgloss.NewStyle().Foreground(colText) // lastModified days
 )
 
 // Messages from the background survey.
@@ -330,17 +331,8 @@ func (m *uiModel) refreshDetail() {
 			}
 			pad := strings.Repeat(" ", nameWidth-utf8.RuneCountInString(name))
 			line := fmt.Sprintf("  %s  %s%s", gStyle.Render(glyph), name, pad)
-			if in.Detail != "" {
-				dStyle := styleMuted
-				switch in.State {
-				case inputStale:
-					dStyle = styleStale
-				case inputPin:
-					dStyle = styleAmber
-				case inputError:
-					dStyle = styleErr
-				}
-				line += "  " + dStyle.Render(in.Detail)
+			if extra := renderInputDetail(in); extra != "" {
+				line += "  " + extra
 			}
 			fmt.Fprintln(&b, line)
 		}
@@ -360,6 +352,52 @@ func renderVCSLine(line vcsLine, nameW int) string {
 		parts = append(parts, styleMuted.Render(line.Desc))
 	}
 	return strings.Join(parts, "  ")
+}
+
+// renderInputDetail colors behind-tip rows: rev and arrow in the state
+// accent, dates in white. Errors stay a single accent string.
+func renderInputDetail(in inputStatus) string {
+	if in.Have != "" || in.Tip != "" {
+		accent := styleMuted
+		switch in.State {
+		case inputStale:
+			accent = styleStale
+		case inputPin:
+			accent = styleAmber
+		case inputError:
+			accent = styleErr
+		}
+		var parts []string
+		if in.Have != "" {
+			parts = append(parts, accent.Render(in.Have))
+			if in.HaveDay != "" {
+				parts = append(parts, styleDate.Render("("+in.HaveDay+")"))
+			}
+		}
+		if in.Have != "" && in.Tip != "" {
+			parts = append(parts, accent.Render("->"))
+		}
+		if in.Tip != "" {
+			parts = append(parts, accent.Render(in.Tip))
+			if in.TipDay != "" {
+				parts = append(parts, styleDate.Render("("+in.TipDay+")"))
+			}
+		}
+		return strings.Join(parts, " ")
+	}
+	if in.Detail == "" {
+		return ""
+	}
+	dStyle := styleMuted
+	switch in.State {
+	case inputStale:
+		dStyle = styleStale
+	case inputPin:
+		dStyle = styleAmber
+	case inputError:
+		dStyle = styleErr
+	}
+	return dStyle.Render(in.Detail)
 }
 
 func inputGlyph(in inputStatus) (string, lipgloss.Style) {

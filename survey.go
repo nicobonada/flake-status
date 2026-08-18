@@ -96,7 +96,12 @@ type inputStatus struct {
 	Name   string
 	State  inputState
 	Pin    bool   // exact "=" version pin in the flake ref (see isExactVersionPin)
-	Detail string // short reason: "stale", "3.21.9 → 3.22.1", error text
+	Detail string // error text, or plain behind-tip line when Have/Tip are unset
+	// Behind-tip labels for the detail pane (lock → tip). Dates are YYYY-MM-DD.
+	Have    string
+	Tip     string
+	HaveDay string
+	TipDay  string
 }
 
 // vcsLine is one bookmark row under the VCS summary.
@@ -554,28 +559,112 @@ func checkInputStatus(name string, nodeRaw json.RawMessage, pin bool, cache *met
 	}
 
 	// Behind tip: exact pins → amber "!"; floating inputs → red "✗".
-	detail := formatBehindDetail(node.Locked, meta, haveV, tipV)
+	behind := parseBehindDetail(node.Locked, meta, haveV, tipV)
 	if pin {
 		base.State = inputPin
-		base.Detail = detail
-		return base
+	} else {
+		base.State = inputStale
 	}
-	base.State = inputStale
-	base.Detail = detail
+	base.Have = behind.Have
+	base.Tip = behind.Tip
+	base.HaveDay = behind.HaveDay
+	base.TipDay = behind.TipDay
+	base.Detail = behind.String()
 	return base
 }
 
-// formatBehindDetail prefers short version-like labels when present; else short hashes.
-func formatBehindDetail(locked map[string]any, meta map[string]any, haveV, tipV string) string {
+// behindDetail is lock vs tip for one input: rev/version plus optional dates.
+type behindDetail struct {
+	Have, Tip       string
+	HaveDay, TipDay string
+	Fallback        string
+}
+
+func parseBehindDetail(locked map[string]any, meta map[string]any, haveV, tipV string) behindDetail {
 	haveLabel := shortRefLabel(locked, haveV)
 	tipLabel := shortRefLabel(metaLocked(meta), tipV)
-	if haveLabel != "" && tipLabel != "" && haveLabel != tipLabel {
-		return haveLabel + " → " + tipLabel
+	d := behindDetail{}
+	switch {
+	case haveLabel != "" && tipLabel != "" && haveLabel != tipLabel:
+		d.Have, d.Tip = haveLabel, tipLabel
+	case haveV != tipV:
+		d.Have, d.Tip = shortHash(haveV), shortHash(tipV)
+	default:
+		d.Fallback = "stale"
 	}
-	if haveV != tipV {
-		return shortHash(haveV) + " → " + shortHash(tipV)
+	if sec, ok := lastModifiedUnix(locked); ok {
+		d.HaveDay = formatDay(sec)
 	}
-	return "stale"
+	if sec, ok := lastModifiedUnix(meta); ok {
+		d.TipDay = formatDay(sec)
+	} else if sec, ok := lastModifiedUnix(metaLocked(meta)); ok {
+		d.TipDay = formatDay(sec)
+	}
+	return d
+}
+
+func formatRevDate(rev, day string) string {
+	if rev == "" {
+		return ""
+	}
+	if day == "" {
+		return rev
+	}
+	return rev + " (" + day + ")"
+}
+
+func (d behindDetail) String() string {
+	if d.Have == "" && d.Tip == "" {
+		if d.Fallback != "" {
+			return d.Fallback
+		}
+		return "stale"
+	}
+	left := formatRevDate(d.Have, d.HaveDay)
+	right := formatRevDate(d.Tip, d.TipDay)
+	switch {
+	case left != "" && right != "":
+		return left + " -> " + right
+	case left != "":
+		return left
+	default:
+		return right
+	}
+}
+
+func lastModifiedUnix(m map[string]any) (int64, bool) {
+	if m == nil {
+		return 0, false
+	}
+	v, ok := m["lastModified"]
+	if !ok || v == nil {
+		return 0, false
+	}
+	var n int64
+	switch t := v.(type) {
+	case float64:
+		n = int64(t)
+	case int64:
+		n = t
+	case int:
+		n = int64(t)
+	case json.Number:
+		i, err := t.Int64()
+		if err != nil {
+			return 0, false
+		}
+		n = i
+	default:
+		return 0, false
+	}
+	if n <= 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+func formatDay(unix int64) string {
+	return time.Unix(unix, 0).UTC().Format("2006-01-02")
 }
 
 func metaLocked(meta map[string]any) map[string]any {
