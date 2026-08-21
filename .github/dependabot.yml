@@ -1,0 +1,14 @@
+version: 2
+updates:
+  # GitHub-native flake.lock bumps. One weekly PR for all inputs.
+  - package-ecosystem: nix
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      flake-inputs:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "chore(flake)"
+    open-pull-requests-limit: 1

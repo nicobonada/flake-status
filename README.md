@@ -6,9 +6,9 @@ lines up with `main` / origin.
 
 Working personal tool — steal ideas freely. **MIT** licensed.
 
-**Read-only:** surfaces potential problems; it does not update locks or activate
-systems. Use `nix flake update` (or your own pin scripts) when you decide to bump
-something.
+**Read-only:** the TUI surfaces potential problems; it does not update locks or
+activate systems. GitHub Dependabot opens a weekly grouped `flake.lock` PR.
+Use `nix flake update` locally when you want a bump outside that schedule.
 
 ## Usage
 
